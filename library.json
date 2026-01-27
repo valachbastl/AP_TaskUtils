@@ -1,0 +1,19 @@
+{
+    "name": "AP_TaskUtils",
+    "version": "1.0.0",
+    "releaseDate": "2026-01-27",
+    "description": "Utility library for FreeRTOS tasks in ESP-IDF",
+    "keywords": ["freertos", "task", "watchdog", "mutex", "esp-idf", "esp32"],
+    "authors": [
+        {
+            "name": "Petr Adámek"
+        }
+    ],
+    "license": "UNLICENSED",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/valachbastl/AP_TaskUtils.git"
+    },
+    "frameworks": ["espidf"],
+    "platforms": ["espressif32"]
+}
