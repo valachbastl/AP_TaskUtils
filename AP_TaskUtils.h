@@ -14,8 +14,9 @@ public:
      * @brief Konstruktor
      * @param tag Nazev tasku pro logovani
      * @param delayMs Vychozi delay v milisekundach (default 10ms)
+     * @param useWatchdog Povolit automaticky watchdog (default true)
      */
-    AP_TaskUtils(const char *tag, uint32_t delayMs = 10);
+    AP_TaskUtils(const char *tag, uint32_t delayMs = 10, bool useWatchdog = true);
 
     /**
      * @brief Inicializace tasku - zaloguje start a prihasi k watchdogu
@@ -45,6 +46,24 @@ public:
      * @brief Reset watchdogu (pokud potrebujete volat manualne)
      */
     void feedWatchdog();
+
+    /**
+     * @brief Zapne watchdog pro tento task
+     *        Prida task k WDT pokud jeste neni pridan
+     */
+    void enableWatchdog();
+
+    /**
+     * @brief Vypne watchdog pro tento task
+     *        Odebere task z WDT
+     */
+    void disableWatchdog();
+
+    /**
+     * @brief Zjisti zda je watchdog povolen
+     * @return true pokud je watchdog aktivni
+     */
+    bool isWatchdogEnabled();
 
     // --- Staticke utility funkce ---
 
@@ -110,4 +129,5 @@ private:
     static SemaphoreHandle_t _mutex;
     const char *_tag;
     uint32_t _delayMs;
+    bool _useWatchdog;
 };

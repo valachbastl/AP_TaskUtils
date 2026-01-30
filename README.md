@@ -6,6 +6,7 @@ Utility library for FreeRTOS tasks in ESP-IDF.
 
 - Task initialization with logging and watchdog registration
 - Automatic watchdog handling during task sleep
+- Optional watchdog disable per task
 - Global mutex for shared data access
 - Arduino-like `millis()` and `micros()` functions
 - Static delay functions
@@ -68,6 +69,22 @@ void myTask(void *pvParameters)
 }
 ```
 
+### Task Without Watchdog
+
+```cpp
+void backgroundTask(void *pvParameters)
+{
+    AP_TaskUtils task("bgTask", 1000, false);  // watchdog disabled
+    task.begin();
+
+    while (1)
+    {
+        // Long running operations without watchdog timeout
+        task.delay();
+    }
+}
+```
+
 ### Static Utilities
 
 ```cpp
@@ -84,12 +101,15 @@ AP_TaskUtils::delayUs(50);
 
 | Method | Description |
 |--------|-------------|
-| `AP_TaskUtils(tag, delayMs)` | Constructor |
-| `begin()` | Initialize task (log + watchdog) |
+| `AP_TaskUtils(tag, delayMs, useWatchdog)` | Constructor (useWatchdog default true) |
+| `begin()` | Initialize task (log + watchdog if enabled) |
 | `delay()` | Sleep with watchdog handling |
 | `setDelay(ms)` | Change delay interval |
 | `getDelay()` | Get current delay |
 | `feedWatchdog()` | Manual watchdog reset |
+| `enableWatchdog()` | Enable watchdog at runtime |
+| `disableWatchdog()` | Disable watchdog at runtime |
+| `isWatchdogEnabled()` | Check if watchdog is enabled |
 
 ### Static Methods
 

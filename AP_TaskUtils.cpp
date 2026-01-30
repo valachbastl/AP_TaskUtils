@@ -4,22 +4,28 @@
 // Staticka promenna pro mutex
 SemaphoreHandle_t AP_TaskUtils::_mutex = NULL;
 
-AP_TaskUtils::AP_TaskUtils(const char *tag, uint32_t delayMs)
-    : _tag(tag), _delayMs(delayMs)
+AP_TaskUtils::AP_TaskUtils(const char *tag, uint32_t delayMs, bool useWatchdog)
+    : _tag(tag), _delayMs(delayMs), _useWatchdog(useWatchdog)
 {
 }
 
 void AP_TaskUtils::begin()
 {
-    ESP_LOGI(_tag, "Task started");
-    esp_task_wdt_add(NULL);
+    ESP_LOGI(_tag, "Task started (watchdog: %s)", _useWatchdog ? "enabled" : "disabled");
+    if (_useWatchdog) {
+        esp_task_wdt_add(NULL);
+    }
 }
 
 void AP_TaskUtils::delay()
 {
-    esp_task_wdt_delete(NULL);
+    if (_useWatchdog) {
+        esp_task_wdt_delete(NULL);
+    }
     vTaskDelay(pdMS_TO_TICKS(_delayMs));
-    esp_task_wdt_add(NULL);
+    if (_useWatchdog) {
+        esp_task_wdt_add(NULL);
+    }
 }
 
 void AP_TaskUtils::setDelay(uint32_t delayMs)
@@ -34,7 +40,32 @@ uint32_t AP_TaskUtils::getDelay()
 
 void AP_TaskUtils::feedWatchdog()
 {
-    esp_task_wdt_reset();
+    if (_useWatchdog) {
+        esp_task_wdt_reset();
+    }
+}
+
+void AP_TaskUtils::enableWatchdog()
+{
+    if (!_useWatchdog) {
+        _useWatchdog = true;
+        esp_task_wdt_add(NULL);
+        ESP_LOGI(_tag, "Watchdog enabled");
+    }
+}
+
+void AP_TaskUtils::disableWatchdog()
+{
+    if (_useWatchdog) {
+        esp_task_wdt_delete(NULL);
+        _useWatchdog = false;
+        ESP_LOGI(_tag, "Watchdog disabled");
+    }
+}
+
+bool AP_TaskUtils::isWatchdogEnabled()
+{
+    return _useWatchdog;
 }
 
 // --- Staticke metody ---
