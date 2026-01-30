@@ -26,7 +26,7 @@ Or with specific version:
 
 ```ini
 lib_deps =
-    https://github.com/valachbastl/AP_TaskUtils.git#v1.0.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v1.1.0
 ```
 
 ## Usage
