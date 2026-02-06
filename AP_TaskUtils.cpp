@@ -5,7 +5,7 @@
 SemaphoreHandle_t AP_TaskUtils::_mutex = NULL;
 
 AP_TaskUtils::AP_TaskUtils(const char *tag, uint32_t delayMs, bool useWatchdog)
-    : _tag(tag), _delayMs(delayMs), _lastRunTime(0), _startTime(0), _useWatchdog(useWatchdog)
+    : _tag(tag), _delayMs(delayMs), _lastRunTime(0), _startTime(0), _useWatchdog(useWatchdog), _useCompensation(true)
 {
 }
 
@@ -31,10 +31,12 @@ void AP_TaskUtils::delay()
     _lastRunTime = (uint32_t)(now - _startTime);
 
     uint32_t actualDelay;
-    if (_lastRunTime < _delayMs) {
+    if (_useCompensation && _lastRunTime < _delayMs) {
         actualDelay = _delayMs - _lastRunTime;
-    } else {
+    } else if (_useCompensation) {
         actualDelay = 1;
+    } else {
+        actualDelay = _delayMs;
     }
 
     if (_useWatchdog) {
@@ -91,6 +93,21 @@ void AP_TaskUtils::disableWatchdog()
 bool AP_TaskUtils::isWatchdogEnabled()
 {
     return _useWatchdog;
+}
+
+void AP_TaskUtils::enableCompensation()
+{
+    _useCompensation = true;
+}
+
+void AP_TaskUtils::disableCompensation()
+{
+    _useCompensation = false;
+}
+
+bool AP_TaskUtils::isCompensationEnabled()
+{
+    return _useCompensation;
 }
 
 // --- Staticke metody ---

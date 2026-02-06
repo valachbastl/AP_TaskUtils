@@ -27,7 +27,7 @@ Or with specific version:
 
 ```ini
 lib_deps =
-    https://github.com/valachbastl/AP_TaskUtils.git#v1.2.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v1.2.1
 ```
 
 ## Usage
@@ -111,6 +111,23 @@ void secondaryTask(void *pvParameters)
 }
 ```
 
+### Task Without Compensation
+
+```cpp
+void lvglTask(void *pvParameters)
+{
+    AP_TaskUtils task("taskLVGL", 10);
+    task.disableCompensation();  // plain vTaskDelay
+    task.begin();
+
+    while (1)
+    {
+        lv_timer_handler();
+        task.delay();  // always waits full 10ms
+    }
+}
+```
+
 ### Task Without Watchdog
 
 ```cpp
@@ -153,6 +170,9 @@ AP_TaskUtils::delayUs(50);
 | `enableWatchdog()` | Enable watchdog at runtime |
 | `disableWatchdog()` | Disable watchdog at runtime |
 | `isWatchdogEnabled()` | Check if watchdog is enabled |
+| `enableCompensation()` | Enable run time compensation (default) |
+| `disableCompensation()` | Disable run time compensation (plain vTaskDelay) |
+| `isCompensationEnabled()` | Check if compensation is enabled |
 
 ### Static Methods
 

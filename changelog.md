@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.1] - 2026-02-06
+
+### Added
+- Metody `enableCompensation()`, `disableCompensation()`, `isCompensationEnabled()` pro volbu zda pouzit kompenzaci doby behu
+- Kompenzace je ve vychozim stavu zapnuta (zpetne kompatibilni s v1.2.0)
+
 ## [1.2.0] - 2026-02-06
 
 ### Changed

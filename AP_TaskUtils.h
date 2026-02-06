@@ -75,6 +75,24 @@ public:
      */
     bool isWatchdogEnabled();
 
+    /**
+     * @brief Zapne kompenzaci doby behu (default)
+     *        delay() bude dopocitavat zbytkovy cas
+     */
+    void enableCompensation();
+
+    /**
+     * @brief Vypne kompenzaci doby behu
+     *        delay() bude vzdy cekat plny interval
+     */
+    void disableCompensation();
+
+    /**
+     * @brief Zjisti zda je kompenzace povolena
+     * @return true pokud je kompenzace aktivni
+     */
+    bool isCompensationEnabled();
+
     // --- Staticke utility funkce ---
 
     /**
@@ -142,4 +160,5 @@ private:
     uint32_t _lastRunTime;
     uint64_t _startTime;
     bool _useWatchdog;
+    bool _useCompensation;
 };
