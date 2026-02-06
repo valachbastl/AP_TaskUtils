@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.0] - 2026-02-06
+
+### Changed
+- Metoda `delay()` nyni kompenzuje dobu behu tasku - automaticky dopocita zbytkovy cas tak, aby celkovy cyklus odpovidal nastavenemu intervalu
+- Pokud task pretahne interval, delay je minimalne 1ms (task se nezablokuje)
+
+### Added
+- Nova metoda `getLastRunTime()` vraci dobu behu posledniho cyklu v ms (pro diagnostiku)
+- Metoda `begin(bool startImmediately)` - volitelne zpozdeni startu tasku o jeden interval
+
 ## [1.1.0] - 2026-01-30
 
 ### Added

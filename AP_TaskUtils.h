@@ -21,14 +21,24 @@ public:
     /**
      * @brief Inicializace tasku - zaloguje start a prihasi k watchdogu
      *        Volat na zacatku task funkce
+     * @param startImmediately true = task zacne okamzite, false = pocka jeden interval pred startem (default true)
      */
-    void begin();
+    void begin(bool startImmediately = true);
 
     /**
-     * @brief Delay s watchdog resetem
+     * @brief Delay s watchdog resetem a kompenzaci doby behu tasku
      *        Volat na konci while(1) smycky
+     *        Automaticky dopocita zbytkovy cas tak, aby celkovy cyklus
+     *        odpovidal nastavenemu intervalu
      */
     void delay();
+
+    /**
+     * @brief Vrati dobu behu posledniho cyklu v milisekundach
+     *        (cas mezi begin()/delay() a nasledujicim delay())
+     * @return Doba behu v ms
+     */
+    uint32_t getLastRunTime();
 
     /**
      * @brief Nastavi novy delay interval
@@ -129,5 +139,7 @@ private:
     static SemaphoreHandle_t _mutex;
     const char *_tag;
     uint32_t _delayMs;
+    uint32_t _lastRunTime;
+    uint64_t _startTime;
     bool _useWatchdog;
 };

@@ -1,7 +1,7 @@
 {
     "name": "AP_TaskUtils",
-    "version": "1.1.0",
-    "releaseDate": "2026-01-30",
+    "version": "1.2.0",
+    "releaseDate": "2026-02-06",
     "description": "Utility library for FreeRTOS tasks in ESP-IDF",
     "keywords": ["freertos", "task", "watchdog", "mutex", "esp-idf", "esp32"],
     "authors": [

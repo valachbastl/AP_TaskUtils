@@ -6,6 +6,7 @@ Utility library for FreeRTOS tasks in ESP-IDF.
 
 - Task initialization with logging and watchdog registration
 - Automatic watchdog handling during task sleep
+- **Execution time compensation** - delay automatically adjusts to maintain consistent cycle intervals
 - Optional watchdog disable per task
 - Global mutex for shared data access
 - Arduino-like `millis()` and `micros()` functions
@@ -26,7 +27,7 @@ Or with specific version:
 
 ```ini
 lib_deps =
-    https://github.com/valachbastl/AP_TaskUtils.git#v1.1.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v1.2.0
 ```
 
 ## Usage
@@ -52,7 +53,7 @@ extern "C" void app_main(void)
 
 void myTask(void *pvParameters)
 {
-    AP_TaskUtils task("myTask", 100);  // tag, delay in ms
+    AP_TaskUtils task("myTask", 100);  // tag, 100ms cycle interval
     task.begin();
 
     while (1)
@@ -63,8 +64,49 @@ void myTask(void *pvParameters)
         AP_TaskUtils::unlock();
 
         // Your task code here
+        // e.g. if this takes 30ms, delay() will sleep only 70ms
+        // to maintain consistent 100ms cycle
 
-        task.delay();  // handles watchdog automatically
+        task.delay();  // compensates for task run time automatically
+    }
+}
+```
+
+### Monitoring Task Run Time
+
+```cpp
+void sensorTask(void *pvParameters)
+{
+    AP_TaskUtils task("sensorTask", 200);  // 200ms cycle
+    task.begin();
+
+    while (1)
+    {
+        readSensors();
+        processData();
+
+        // Check if task is close to overrunning its interval
+        if (task.getLastRunTime() > task.getDelay() * 0.8) {
+            ESP_LOGW("sensor", "Task taking too long: %lu ms", task.getLastRunTime());
+        }
+
+        task.delay();
+    }
+}
+```
+
+### Delayed Start
+
+```cpp
+void secondaryTask(void *pvParameters)
+{
+    AP_TaskUtils task("secondary", 100);
+    task.begin(false);  // waits 100ms before first execution
+
+    while (1)
+    {
+        // task code
+        task.delay();
     }
 }
 ```
@@ -102,8 +144,9 @@ AP_TaskUtils::delayUs(50);
 | Method | Description |
 |--------|-------------|
 | `AP_TaskUtils(tag, delayMs, useWatchdog)` | Constructor (useWatchdog default true) |
-| `begin()` | Initialize task (log + watchdog if enabled) |
-| `delay()` | Sleep with watchdog handling |
+| `begin(startImmediately)` | Initialize task (default true, false = wait one interval before start) |
+| `delay()` | Sleep with watchdog handling and run time compensation |
+| `getLastRunTime()` | Get last cycle run time in ms |
 | `setDelay(ms)` | Change delay interval |
 | `getDelay()` | Get current delay |
 | `feedWatchdog()` | Manual watchdog reset |

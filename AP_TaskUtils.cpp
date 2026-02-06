@@ -5,27 +5,52 @@
 SemaphoreHandle_t AP_TaskUtils::_mutex = NULL;
 
 AP_TaskUtils::AP_TaskUtils(const char *tag, uint32_t delayMs, bool useWatchdog)
-    : _tag(tag), _delayMs(delayMs), _useWatchdog(useWatchdog)
+    : _tag(tag), _delayMs(delayMs), _lastRunTime(0), _startTime(0), _useWatchdog(useWatchdog)
 {
 }
 
-void AP_TaskUtils::begin()
+void AP_TaskUtils::begin(bool startImmediately)
 {
-    ESP_LOGI(_tag, "Task started (watchdog: %s)", _useWatchdog ? "enabled" : "disabled");
+    ESP_LOGI(_tag, "Task started (watchdog: %s, immediate: %s)",
+             _useWatchdog ? "enabled" : "disabled",
+             startImmediately ? "yes" : "no");
+
+    if (!startImmediately) {
+        vTaskDelay(pdMS_TO_TICKS(_delayMs));
+    }
+
     if (_useWatchdog) {
         esp_task_wdt_add(NULL);
     }
+    _startTime = millis();
 }
 
 void AP_TaskUtils::delay()
 {
+    uint64_t now = millis();
+    _lastRunTime = (uint32_t)(now - _startTime);
+
+    uint32_t actualDelay;
+    if (_lastRunTime < _delayMs) {
+        actualDelay = _delayMs - _lastRunTime;
+    } else {
+        actualDelay = 1;
+    }
+
     if (_useWatchdog) {
         esp_task_wdt_delete(NULL);
     }
-    vTaskDelay(pdMS_TO_TICKS(_delayMs));
+    vTaskDelay(pdMS_TO_TICKS(actualDelay));
     if (_useWatchdog) {
         esp_task_wdt_add(NULL);
     }
+
+    _startTime = millis();
+}
+
+uint32_t AP_TaskUtils::getLastRunTime()
+{
+    return _lastRunTime;
 }
 
 void AP_TaskUtils::setDelay(uint32_t delayMs)
