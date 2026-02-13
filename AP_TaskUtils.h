@@ -93,6 +93,24 @@ public:
      */
     bool isCompensationEnabled();
 
+    /**
+     * @brief Zapne notify delay rezim
+     *        delay() pouzije ulTaskNotifyTake misto vTaskDelay,
+     *        coz umozni okamzite probuzeni pres notify()
+     */
+    void enableNotifyDelay();
+
+    /**
+     * @brief Vypne notify delay rezim (zpet na vTaskDelay)
+     */
+    void disableNotifyDelay();
+
+    /**
+     * @brief Zjisti zda je notify delay rezim povolen
+     * @return true pokud je notify delay aktivni
+     */
+    bool isNotifyDelayEnabled();
+
     // --- Staticke utility funkce ---
 
     /**
@@ -102,6 +120,12 @@ public:
      * @param panic Vyvolat panic pri timeout (default true)
      */
     static void initWatchdog(uint32_t timeoutMs = 5000, bool panic = true);
+
+    /**
+     * @brief Vrati cas od startu v sekundach
+     * @return Cas v s
+     */
+    static uint64_t seconds();
 
     /**
      * @brief Vrati cas od startu v milisekundach
@@ -161,4 +185,6 @@ private:
     uint64_t _startTime;
     bool _useWatchdog;
     bool _useCompensation;
+    bool _useNotifyDelay;
+    TaskHandle_t _taskHandle;
 };

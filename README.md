@@ -7,9 +7,10 @@ Utility library for FreeRTOS tasks in ESP-IDF.
 - Task initialization with logging and watchdog registration
 - Automatic watchdog handling during task sleep
 - **Execution time compensation** - delay automatically adjusts to maintain consistent cycle intervals
+- **Notify delay mode** - task can be woken up immediately via `xTaskNotifyGive` (useful for on-demand triggers)
 - Optional watchdog disable per task
 - Global mutex for shared data access
-- Arduino-like `millis()` and `micros()` functions
+- Time functions `seconds()`, `millis()`, `micros()`
 - Static delay functions
 
 ## Installation
@@ -27,7 +28,7 @@ Or with specific version:
 
 ```ini
 lib_deps =
-    https://github.com/valachbastl/AP_TaskUtils.git#v1.2.1
+    https://github.com/valachbastl/AP_TaskUtils.git#v1.3.0
 ```
 
 ## Usage
@@ -128,6 +129,31 @@ void lvglTask(void *pvParameters)
 }
 ```
 
+### Notify Delay (on-demand wakeup)
+
+```cpp
+static TaskHandle_t taskHandle = NULL;
+
+void mqttTask(void *pvParameters)
+{
+    AP_TaskUtils task("mqttTask", 60000);  // 60s interval
+    task.enableNotifyDelay();
+    task.begin();
+
+    while (1)
+    {
+        publishData();
+        task.delay();  // sleeps up to 60s, wakes on xTaskNotifyGive(taskHandle)
+    }
+}
+
+// Call from another task or event handler to trigger immediate wakeup
+void requestUpdate(void)
+{
+    if (taskHandle) xTaskNotifyGive(taskHandle);
+}
+```
+
 ### Task Without Watchdog
 
 ```cpp
@@ -147,6 +173,7 @@ void backgroundTask(void *pvParameters)
 ### Static Utilities
 
 ```cpp
+uint64_t time_s  = AP_TaskUtils::seconds();
 uint64_t time_ms = AP_TaskUtils::millis();
 uint64_t time_us = AP_TaskUtils::micros();
 
@@ -173,6 +200,9 @@ AP_TaskUtils::delayUs(50);
 | `enableCompensation()` | Enable run time compensation (default) |
 | `disableCompensation()` | Disable run time compensation (plain vTaskDelay) |
 | `isCompensationEnabled()` | Check if compensation is enabled |
+| `enableNotifyDelay()` | Enable notify delay mode (wakeup via `xTaskNotifyGive`) |
+| `disableNotifyDelay()` | Disable notify delay mode (back to `vTaskDelay`) |
+| `isNotifyDelayEnabled()` | Check if notify delay is enabled |
 
 ### Static Methods
 
@@ -183,6 +213,7 @@ AP_TaskUtils::delayUs(50);
 | `lock()` | Lock mutex (waits forever) |
 | `lock(timeoutMs)` | Lock mutex with timeout |
 | `unlock()` | Unlock mutex |
+| `seconds()` | Time since boot in s |
 | `millis()` | Time since boot in ms |
 | `micros()` | Time since boot in us |
 | `delayMs(ms)` | Delay in milliseconds |

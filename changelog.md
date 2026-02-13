@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.3.0] - 2026-02-13
+
+### Added
+- Notify delay rezim `enableNotifyDelay()`, `disableNotifyDelay()`, `isNotifyDelayEnabled()` - delay() pouzije `ulTaskNotifyTake` misto `vTaskDelay`, coz umozni okamzite probuzeni tasku pres `xTaskNotifyGive`
+- Staticka metoda `seconds()` - cas od startu v sekundach
+
 ## [1.2.1] - 2026-02-06
 
 ### Added

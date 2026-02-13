@@ -5,15 +5,18 @@
 SemaphoreHandle_t AP_TaskUtils::_mutex = NULL;
 
 AP_TaskUtils::AP_TaskUtils(const char *tag, uint32_t delayMs, bool useWatchdog)
-    : _tag(tag), _delayMs(delayMs), _lastRunTime(0), _startTime(0), _useWatchdog(useWatchdog), _useCompensation(true)
+    : _tag(tag), _delayMs(delayMs), _lastRunTime(0), _startTime(0), _useWatchdog(useWatchdog), _useCompensation(true), _useNotifyDelay(false), _taskHandle(NULL)
 {
 }
 
 void AP_TaskUtils::begin(bool startImmediately)
 {
-    ESP_LOGI(_tag, "Task started (watchdog: %s, immediate: %s)",
+    _taskHandle = xTaskGetCurrentTaskHandle();
+
+    ESP_LOGI(_tag, "Task started (watchdog: %s, immediate: %s, notifyDelay: %s)",
              _useWatchdog ? "enabled" : "disabled",
-             startImmediately ? "yes" : "no");
+             startImmediately ? "yes" : "no",
+             _useNotifyDelay ? "enabled" : "disabled");
 
     if (!startImmediately) {
         vTaskDelay(pdMS_TO_TICKS(_delayMs));
@@ -42,7 +45,13 @@ void AP_TaskUtils::delay()
     if (_useWatchdog) {
         esp_task_wdt_delete(NULL);
     }
-    vTaskDelay(pdMS_TO_TICKS(actualDelay));
+
+    if (_useNotifyDelay && _taskHandle) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(actualDelay));
+    } else {
+        vTaskDelay(pdMS_TO_TICKS(actualDelay));
+    }
+
     if (_useWatchdog) {
         esp_task_wdt_add(NULL);
     }
@@ -110,6 +119,21 @@ bool AP_TaskUtils::isCompensationEnabled()
     return _useCompensation;
 }
 
+void AP_TaskUtils::enableNotifyDelay()
+{
+    _useNotifyDelay = true;
+}
+
+void AP_TaskUtils::disableNotifyDelay()
+{
+    _useNotifyDelay = false;
+}
+
+bool AP_TaskUtils::isNotifyDelayEnabled()
+{
+    return _useNotifyDelay;
+}
+
 // --- Staticke metody ---
 
 void AP_TaskUtils::initWatchdog(uint32_t timeoutMs, bool panic)
@@ -125,6 +149,11 @@ void AP_TaskUtils::initWatchdog(uint32_t timeoutMs, bool panic)
     esp_task_wdt_init(&config);
     ESP_LOGI("AP_TaskUtils", "Watchdog initialized (timeout: %lu ms, panic: %s)",
              timeoutMs, panic ? "yes" : "no");
+}
+
+uint64_t AP_TaskUtils::seconds()
+{
+    return esp_timer_get_time() / 1000000;
 }
 
 uint64_t AP_TaskUtils::millis()
