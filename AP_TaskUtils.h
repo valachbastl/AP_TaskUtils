@@ -6,6 +6,7 @@
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_log.h"
+#include "vector"
 
 class AP_TaskUtils
 {
@@ -111,6 +112,24 @@ public:
      */
     bool isNotifyDelayEnabled();
 
+    // --- Timer ---
+
+    /**
+     * @brief Vytvori novy timer s danym intervalem
+     * @param intervalMs Interval v milisekundach
+     * @param triggerOnStart true = spusti se hned pri prvnim volani timer() (default false)
+     * @return Index timeru
+     */
+    int8_t addTimer(uint32_t intervalMs, bool triggerOnStart = false);
+
+    /**
+     * @brief Zkontroluje zda timer vyprsil a automaticky ho restartuje
+     *        Volat v hlavni smycce tasku
+     * @param index Index timeru z addTimer()
+     * @return true pokud timer vyprsil (a byl restartovan)
+     */
+    bool timer(int8_t index);
+
     // --- Staticke utility funkce ---
 
     /**
@@ -178,6 +197,12 @@ public:
     static void unlock();
 
 private:
+    struct Timer {
+        uint32_t intervalMs;
+        uint64_t lastTrigger;
+        bool firstRun;
+    };
+
     static SemaphoreHandle_t _mutex;
     const char *_tag;
     uint32_t _delayMs;
@@ -187,4 +212,5 @@ private:
     bool _useCompensation;
     bool _useNotifyDelay;
     TaskHandle_t _taskHandle;
+    std::vector<Timer> _timers;
 };

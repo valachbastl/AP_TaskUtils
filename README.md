@@ -8,6 +8,7 @@ Utility library for FreeRTOS tasks in ESP-IDF.
 - Automatic watchdog handling during task sleep
 - **Execution time compensation** - delay automatically adjusts to maintain consistent cycle intervals
 - **Notify delay mode** - task can be woken up immediately via `xTaskNotifyGive` (useful for on-demand triggers)
+- **Timer system** - periodic timers independent of task delay interval, with optional trigger on start
 - Optional watchdog disable per task
 - Global mutex for shared data access
 - Time functions `seconds()`, `millis()`, `micros()`
@@ -28,7 +29,7 @@ Or with specific version:
 
 ```ini
 lib_deps =
-    https://github.com/valachbastl/AP_TaskUtils.git#v1.3.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v1.4.0
 ```
 
 ## Usage
@@ -154,6 +155,34 @@ void requestUpdate(void)
 }
 ```
 
+### Periodic Timers
+
+```cpp
+void sensorTask(void *pvParameters)
+{
+    AP_TaskUtils task("sensorTask", 1000);  // 1s cycle
+    int8_t timerCalibrate = task.addTimer(3600000);        // every hour
+    int8_t timerLog = task.addTimer(10000, true);          // every 10s, runs immediately on start
+    task.begin();
+
+    while (1)
+    {
+        if (task.timer(timerCalibrate)) {
+            // runs once per hour
+            calibrateSensor();
+        }
+
+        if (task.timer(timerLog)) {
+            // runs every 10s (and on first iteration)
+            logData();
+        }
+
+        readSensor();
+        task.delay();
+    }
+}
+```
+
 ### Task Without Watchdog
 
 ```cpp
@@ -203,6 +232,8 @@ AP_TaskUtils::delayUs(50);
 | `enableNotifyDelay()` | Enable notify delay mode (wakeup via `xTaskNotifyGive`) |
 | `disableNotifyDelay()` | Disable notify delay mode (back to `vTaskDelay`) |
 | `isNotifyDelayEnabled()` | Check if notify delay is enabled |
+| `addTimer(intervalMs, triggerOnStart)` | Create periodic timer, returns index (triggerOnStart default false) |
+| `timer(index)` | Check if timer elapsed, auto-restarts (returns true when fired) |
 
 ### Static Methods
 

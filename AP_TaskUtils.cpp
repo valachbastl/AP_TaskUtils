@@ -134,6 +134,32 @@ bool AP_TaskUtils::isNotifyDelayEnabled()
     return _useNotifyDelay;
 }
 
+// --- Timer metody ---
+
+int8_t AP_TaskUtils::addTimer(uint32_t intervalMs, bool triggerOnStart)
+{
+    _timers.push_back({intervalMs, millis(), triggerOnStart});
+    return (int8_t)(_timers.size() - 1);
+}
+
+bool AP_TaskUtils::timer(int8_t index)
+{
+    if (index < 0 || index >= (int8_t)_timers.size()) return false;
+
+    if (_timers[index].firstRun) {
+        _timers[index].firstRun = false;
+        _timers[index].lastTrigger = millis();
+        return true;
+    }
+
+    uint64_t now = millis();
+    if (now - _timers[index].lastTrigger >= _timers[index].intervalMs) {
+        _timers[index].lastTrigger = now;
+        return true;
+    }
+    return false;
+}
+
 // --- Staticke metody ---
 
 void AP_TaskUtils::initWatchdog(uint32_t timeoutMs, bool panic)

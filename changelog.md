@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0] - 2026-02-16
+
+### Added
+- Timer system `addTimer(intervalMs, triggerOnStart)`, `timer(index)` - periodicky spousteny timer nezavisly na delay intervalu tasku
+- Libovolny pocet timeru na task (dynamicky pres `std::vector`)
+- Volitelny `triggerOnStart` parametr - spusti timer hned pri prvnim volani `timer()` (default false)
+
 ## [1.3.0] - 2026-02-13
 
 ### Added
