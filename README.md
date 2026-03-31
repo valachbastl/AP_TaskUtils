@@ -8,6 +8,7 @@ Utility library for FreeRTOS tasks in ESP-IDF.
 - Automatic watchdog handling during task sleep
 - **Execution time compensation** - delay automatically adjusts to maintain consistent cycle intervals
 - **Notify delay mode** - task can be woken up immediately via `xTaskNotifyGive` (useful for on-demand triggers)
+- **`NO_PERIOD` mode** - task with no periodic interval, sleeps forever until woken via `xTaskNotifyGive` (ideal for event-driven tasks like TTS, MQTT publish on demand)
 - **Timer system** - periodic timers independent of task delay interval, with optional trigger on start
 - Optional watchdog disable per task
 - Global mutex for shared data access
@@ -29,7 +30,7 @@ Or with specific version:
 
 ```ini
 lib_deps =
-    https://github.com/valachbastl/AP_TaskUtils.git#v1.4.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v1.5.0
 ```
 
 ## Usage
@@ -155,6 +156,34 @@ void requestUpdate(void)
 }
 ```
 
+### NO_PERIOD — event-driven task (no periodic interval)
+
+```cpp
+static TaskHandle_t ttsHandle = NULL;
+
+void ttsTask(void *pvParameters)
+{
+    AP_TaskUtils task("ttsTask", AP_TaskUtils::NO_PERIOD);  // no periodic interval, enableNotifyDelay set automatically
+    task.begin();
+
+    while (1)
+    {
+        task.delay();       // sleeps forever until xTaskNotifyGive(ttsHandle)
+
+        // process event (e.g. read from queue and synthesize speech)
+        processEvent();
+    }
+}
+
+// Wake up the task from another context
+void triggerTTS(void)
+{
+    if (ttsHandle) xTaskNotifyGive(ttsHandle);
+}
+```
+
+> **Note:** `begin(false)` with `NO_PERIOD` waits for the first `xTaskNotifyGive` before the first execution.
+
 ### Periodic Timers
 
 ```cpp
@@ -216,11 +245,11 @@ AP_TaskUtils::delayUs(50);
 
 | Method | Description |
 |--------|-------------|
-| `AP_TaskUtils(tag, delayMs, useWatchdog)` | Constructor (useWatchdog default true) |
-| `begin(startImmediately)` | Initialize task (default true, false = wait one interval before start) |
+| `AP_TaskUtils(tag, delayMs, useWatchdog)` | Constructor (useWatchdog default true, delayMs = `NO_PERIOD` for event-driven task) |
+| `begin(startImmediately)` | Initialize task (default true, false = wait one interval / one notify before start) |
 | `delay()` | Sleep with watchdog handling and run time compensation |
 | `getLastRunTime()` | Get last cycle run time in ms |
-| `setDelay(ms)` | Change delay interval |
+| `setDelay(ms)` | Change delay interval (`NO_PERIOD` = event-driven, enables notify delay automatically) |
 | `getDelay()` | Get current delay |
 | `feedWatchdog()` | Manual watchdog reset |
 | `enableWatchdog()` | Enable watchdog at runtime |
@@ -230,7 +259,7 @@ AP_TaskUtils::delayUs(50);
 | `disableCompensation()` | Disable run time compensation (plain vTaskDelay) |
 | `isCompensationEnabled()` | Check if compensation is enabled |
 | `enableNotifyDelay()` | Enable notify delay mode (wakeup via `xTaskNotifyGive`) |
-| `disableNotifyDelay()` | Disable notify delay mode (back to `vTaskDelay`) |
+| `disableNotifyDelay()` | Disable notify delay mode (back to `vTaskDelay`, ignored for `NO_PERIOD` tasks) |
 | `isNotifyDelayEnabled()` | Check if notify delay is enabled |
 | `addTimer(intervalMs, triggerOnStart)` | Create periodic timer, returns index (triggerOnStart default false) |
 | `timer(index)` | Check if timer elapsed, auto-restarts (returns true when fired) |

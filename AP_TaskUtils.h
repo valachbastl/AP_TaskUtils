@@ -11,10 +11,13 @@
 class AP_TaskUtils
 {
 public:
+    // delayMs = NO_PERIOD → task ceka v delay() na xTaskNotifyGive(), enableNotifyDelay() se nastavi automaticky
+    static constexpr uint32_t NO_PERIOD = UINT32_MAX;
+
     /**
      * @brief Konstruktor
      * @param tag Nazev tasku pro logovani
-     * @param delayMs Vychozi delay v milisekundach (default 10ms)
+     * @param delayMs Vychozi delay v milisekundach (default 10ms), AP_TaskUtils::NO_PERIOD = bez periodickeho volani
      * @param useWatchdog Povolit automaticky watchdog (default true)
      */
     AP_TaskUtils(const char *tag, uint32_t delayMs = 10, bool useWatchdog = true);
@@ -43,7 +46,8 @@ public:
 
     /**
      * @brief Nastavi novy delay interval
-     * @param delayMs Delay v milisekundach
+     * @param delayMs Delay v milisekundach, AP_TaskUtils::NO_PERIOD = bez periodickeho volani,
+     *                task ceka v delay() na probuzeni pres xTaskNotifyGive(handle) - enableNotifyDelay() se nastavi automaticky
      */
     void setDelay(uint32_t delayMs);
 
@@ -103,6 +107,7 @@ public:
 
     /**
      * @brief Vypne notify delay rezim (zpet na vTaskDelay)
+     *        Ignorovano pokud je nastaven NO_PERIOD - task musi zustat probuzitelny
      */
     void disableNotifyDelay();
 

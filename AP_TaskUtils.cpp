@@ -5,8 +5,9 @@
 SemaphoreHandle_t AP_TaskUtils::_mutex = NULL;
 
 AP_TaskUtils::AP_TaskUtils(const char *tag, uint32_t delayMs, bool useWatchdog)
-    : _tag(tag), _delayMs(delayMs), _lastRunTime(0), _startTime(0), _useWatchdog(useWatchdog), _useCompensation(true), _useNotifyDelay(false), _taskHandle(NULL)
+    : _tag(tag), _delayMs(0), _lastRunTime(0), _startTime(0), _useWatchdog(useWatchdog), _useCompensation(true), _useNotifyDelay(false), _taskHandle(NULL)
 {
+    setDelay(delayMs);
 }
 
 void AP_TaskUtils::begin(bool startImmediately)
@@ -19,7 +20,11 @@ void AP_TaskUtils::begin(bool startImmediately)
              _useNotifyDelay ? "enabled" : "disabled");
 
     if (!startImmediately) {
-        vTaskDelay(pdMS_TO_TICKS(_delayMs));
+        if (_delayMs == UINT32_MAX) {
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // NO_PERIOD: cekej na prvni notify pred prvnim pruchodem
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(_delayMs));
+        }
     }
 
     if (_useWatchdog) {
@@ -47,7 +52,8 @@ void AP_TaskUtils::delay()
     }
 
     if (_useNotifyDelay && _taskHandle) {
-        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(actualDelay));
+        TickType_t timeout = (_delayMs == UINT32_MAX) ? portMAX_DELAY : pdMS_TO_TICKS(actualDelay);
+        ulTaskNotifyTake(pdTRUE, timeout);
     } else {
         vTaskDelay(pdMS_TO_TICKS(actualDelay));
     }
@@ -67,6 +73,7 @@ uint32_t AP_TaskUtils::getLastRunTime()
 void AP_TaskUtils::setDelay(uint32_t delayMs)
 {
     _delayMs = (delayMs > 0) ? delayMs : 1;
+    if (_delayMs == UINT32_MAX) enableNotifyDelay();
 }
 
 uint32_t AP_TaskUtils::getDelay()
@@ -126,6 +133,10 @@ void AP_TaskUtils::enableNotifyDelay()
 
 void AP_TaskUtils::disableNotifyDelay()
 {
+    if (_delayMs == UINT32_MAX) {
+        ESP_LOGW(_tag, "disableNotifyDelay() ignorovano - NO_PERIOD task musi zustat probuditelny pres xTaskNotifyGive()");
+        return;
+    }
     _useNotifyDelay = false;
 }
 

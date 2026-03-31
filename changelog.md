@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.5.0] - 2026-03-30
+
+### Added
+- Konstanta `NO_PERIOD` (`UINT32_MAX`) pro tasky bez periodickeho volani - task ceka v `delay()` na `xTaskNotifyGive()` s `portMAX_DELAY`
+- `setDelay(NO_PERIOD)` automaticky zapne `enableNotifyDelay()`
+- `begin(false)` s `NO_PERIOD` ceka na prvni `xTaskNotifyGive()` pred prvnim pruchodem
+
+### Changed
+- Konstruktor nyni vola `setDelay()` interně - logika inicializace na jednom miste
+- `disableNotifyDelay()` ignoruje volani pokud je nastaven `NO_PERIOD` (s varovanim v logu)
+
 ## [1.4.0] - 2026-02-16
 
 ### Added
