@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1] - 2026-03-31
+
+### Fixed
+- README: NO_PERIOD priklad opraven - `begin(false)` a `task.delay()` na konci smycky (spravny vzor pro event-driven task)
+- README: `begin()` API tabulka - doplnena poznamka ze pro `NO_PERIOD` je doporucen `begin(false)`
+- Log zprava v `disableNotifyDelay()` prelozena do anglictiny (konzistentni s ostatnimi log zpravami)
+
 ## [1.5.0] - 2026-03-30
 
 ### Added

@@ -134,7 +134,7 @@ void AP_TaskUtils::enableNotifyDelay()
 void AP_TaskUtils::disableNotifyDelay()
 {
     if (_delayMs == UINT32_MAX) {
-        ESP_LOGW(_tag, "disableNotifyDelay() ignorovano - NO_PERIOD task musi zustat probuditelny pres xTaskNotifyGive()");
+        ESP_LOGW(_tag, "disableNotifyDelay() ignored - NO_PERIOD task must remain wakeable via xTaskNotifyGive()");
         return;
     }
     _useNotifyDelay = false;

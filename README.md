@@ -30,7 +30,7 @@ Or with specific version:
 
 ```ini
 lib_deps =
-    https://github.com/valachbastl/AP_TaskUtils.git#v1.5.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v1.5.1
 ```
 
 ## Usage
@@ -164,14 +164,14 @@ static TaskHandle_t ttsHandle = NULL;
 void ttsTask(void *pvParameters)
 {
     AP_TaskUtils task("ttsTask", AP_TaskUtils::NO_PERIOD);  // no periodic interval, enableNotifyDelay set automatically
-    task.begin();
+    task.begin(false);  // wait for first xTaskNotifyGive before entering loop
 
     while (1)
     {
-        task.delay();       // sleeps forever until xTaskNotifyGive(ttsHandle)
-
         // process event (e.g. read from queue and synthesize speech)
         processEvent();
+
+        task.delay();   // sleeps forever until next xTaskNotifyGive(ttsHandle)
     }
 }
 
@@ -181,8 +181,6 @@ void triggerTTS(void)
     if (ttsHandle) xTaskNotifyGive(ttsHandle);
 }
 ```
-
-> **Note:** `begin(false)` with `NO_PERIOD` waits for the first `xTaskNotifyGive` before the first execution.
 
 ### Periodic Timers
 
@@ -246,7 +244,7 @@ AP_TaskUtils::delayUs(50);
 | Method | Description |
 |--------|-------------|
 | `AP_TaskUtils(tag, delayMs, useWatchdog)` | Constructor (useWatchdog default true, delayMs = `NO_PERIOD` for event-driven task) |
-| `begin(startImmediately)` | Initialize task (default true, false = wait one interval / one notify before start) |
+| `begin(startImmediately)` | Initialize task (default true, false = wait one interval / one notify before start — recommended for `NO_PERIOD`) |
 | `delay()` | Sleep with watchdog handling and run time compensation |
 | `getLastRunTime()` | Get last cycle run time in ms |
 | `setDelay(ms)` | Change delay interval (`NO_PERIOD` = event-driven, enables notify delay automatically) |
