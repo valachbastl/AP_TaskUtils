@@ -65,7 +65,7 @@ static void mqttTask(void *pvParameters)
 
 void mqtt_task_create()
 {
-    xTaskCreatePinnedToCore(mqttTask, TAG, 4096, NULL, 5, NULL, 1);
+    xTaskCreate(mqttTask, TAG, 4096, NULL, 5, NULL);
 }
 ```
 
@@ -137,9 +137,9 @@ static void displayTask(void *pvParameters)
 AP_TaskUtils::notify("displayTask");
 ```
 
-### waitReady — závislosti mezi tasky
+### waitReady — task dependencies
 
-`app_main` vytvoří všechny tasky a skončí. Každý task si sám počká na co potřebuje:
+`app_main` creates all tasks and returns. Each task waits for its own dependencies:
 
 ```cpp
 // mqtt_task.cpp
@@ -147,8 +147,8 @@ static void mqttTask(void *pvParameters)
 {
     AP_TaskUtils task(TAG, 60000, AP_TaskUtils::DELAY);
 
-    AP_TaskUtils::waitReady("wifiTask");  // čeká než wifiTask signalizuje ready
-                                          // app_main a ostatní tasky běží normálně
+    AP_TaskUtils::waitReady("wifiTask");  // wait until wifiTask signals ready
+                                          // app_main and other tasks continue normally
 
     initMqtt();
 
@@ -207,8 +207,8 @@ if (errorQueue.receive(e, 100)) { ... }   // with timeout
 
 | Constructor | Description |
 |---|---|
-| `AP_TaskUtils(tag, intervalMs, mode, watchdog, waitBeforeStart)` | PERIODIC / DELAY mód |
-| `AP_TaskUtils(tag, mode, watchdog, waitBeforeStart)` | EVENT mód (no interval) |
+| `AP_TaskUtils(tag, intervalMs, mode, watchdog, waitBeforeStart)` | PERIODIC / DELAY mode |
+| `AP_TaskUtils(tag, mode, watchdog, waitBeforeStart)` | EVENT mode (no interval) |
 
 Defaults: `mode = PERIODIC`, `watchdog = true`, `waitBeforeStart = false` (EVENT constructor: `waitBeforeStart = true`)
 
