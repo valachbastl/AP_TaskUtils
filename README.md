@@ -1,281 +1,282 @@
 # AP_TaskUtils
 
-Utility library for FreeRTOS tasks in ESP-IDF.
+Utility library for FreeRTOS tasks in ESP-IDF. Simplifies task lifecycle management, watchdog handling, cross-task communication and shared data passing.
 
 ## Features
 
-- Task initialization with logging and watchdog registration
-- Automatic watchdog handling during task sleep
-- **Execution time compensation** - delay automatically adjusts to maintain consistent cycle intervals
-- **Notify delay mode** - task can be woken up immediately via `xTaskNotifyGive` (useful for on-demand triggers)
-- **`NO_PERIOD` mode** - task with no periodic interval, sleeps forever until woken via `xTaskNotifyGive` (ideal for event-driven tasks like TTS, MQTT publish on demand)
-- **Timer system** - periodic timers independent of task delay interval, with optional trigger on start
-- Optional watchdog disable per task
-- Global mutex for shared data access
-- Time functions `seconds()`, `millis()`, `micros()`
-- Static delay functions
+- **Three task modes** — `PERIODIC` (vTaskDelayUntil, precise interval), `DELAY` (ulTaskNotifyTake, wakeable anytime), `EVENT` (event-driven, no interval)
+- **Task registry** — wake, suspend, resume or destroy any task by name without storing `TaskHandle_t`
+- **No boilerplate** — no explicit `begin()` needed, ready signaled automatically on first `wait()`
+- **`AP_Channel<T>`** — thread-safe shared state for 1 writer / N readers (ISR-safe)
+- **`AP_Queue<T>`** — thread-safe event stream for N writers / 1 reader (ISR-safe)
+- **Watchdog** — automatic handling during sleep, configurable per task at any time
+- **Timers** — independent periodic timers per task, unlimited count
+- **Global mutex** — for shared peripheral access (I2C, SPI, ...)
+- **Time utilities** — `millis()`, `seconds()`, `micros()`, `delayMs()`, `delayUs()`
 
 ## Installation
-
-### PlatformIO
-
-Add to `platformio.ini`:
 
 ```ini
 lib_deps =
     https://github.com/valachbastl/AP_TaskUtils.git
+
+# Or pinned to version:
+    https://github.com/valachbastl/AP_TaskUtils.git#v2.0.0
 ```
 
-Or with specific version:
+## Quick Start
 
-```ini
-lib_deps =
-    https://github.com/valachbastl/AP_TaskUtils.git#v1.5.1
-```
-
-## Usage
-
-### Initialization (app_main)
+### app_main
 
 ```cpp
 #include "AP_TaskUtils.h"
 
 extern "C" void app_main(void)
 {
-    AP_TaskUtils::initWatchdog(5000, true);  // 5s timeout, panic on timeout
-    AP_TaskUtils::initMutex();
+    AP_TaskUtils::initWatchdog(5000);  // 5s timeout, panic on timeout
+    AP_TaskUtils::initMutex();         // only if using lock()/unlock()
 
-    // Create tasks...
+    sensor_task_create();
+    mqtt_task_create();
+    display_task_create();
 }
 ```
 
-### Task Example
+### Recommended file pattern
+
+Use `static const char *TAG` to share the task name across the entire file — for `AP_TaskUtils`, `ESP_LOGI` and `xTaskCreate`:
 
 ```cpp
+// mqtt_task.cpp
 #include "AP_TaskUtils.h"
 
-void myTask(void *pvParameters)
+static const char *TAG = "mqttTask";
+
+static void mqttTask(void *pvParameters)
 {
-    AP_TaskUtils task("myTask", 100);  // tag, 100ms cycle interval
-    task.begin();
-
-    while (1)
-    {
-        // Access shared data
-        AP_TaskUtils::lock();
-        // ... work with shared variables ...
-        AP_TaskUtils::unlock();
-
-        // Your task code here
-        // e.g. if this takes 30ms, delay() will sleep only 70ms
-        // to maintain consistent 100ms cycle
-
-        task.delay();  // compensates for task run time automatically
-    }
-}
-```
-
-### Monitoring Task Run Time
-
-```cpp
-void sensorTask(void *pvParameters)
-{
-    AP_TaskUtils task("sensorTask", 200);  // 200ms cycle
-    task.begin();
-
-    while (1)
-    {
-        readSensors();
-        processData();
-
-        // Check if task is close to overrunning its interval
-        if (task.getLastRunTime() > task.getDelay() * 0.8) {
-            ESP_LOGW("sensor", "Task taking too long: %lu ms", task.getLastRunTime());
-        }
-
-        task.delay();
-    }
-}
-```
-
-### Delayed Start
-
-```cpp
-void secondaryTask(void *pvParameters)
-{
-    AP_TaskUtils task("secondary", 100);
-    task.begin(false);  // waits 100ms before first execution
-
-    while (1)
-    {
-        // task code
-        task.delay();
-    }
-}
-```
-
-### Task Without Compensation
-
-```cpp
-void lvglTask(void *pvParameters)
-{
-    AP_TaskUtils task("taskLVGL", 10);
-    task.disableCompensation();  // plain vTaskDelay
-    task.begin();
-
-    while (1)
-    {
-        lv_timer_handler();
-        task.delay();  // always waits full 10ms
-    }
-}
-```
-
-### Notify Delay (on-demand wakeup)
-
-```cpp
-static TaskHandle_t taskHandle = NULL;
-
-void mqttTask(void *pvParameters)
-{
-    AP_TaskUtils task("mqttTask", 60000);  // 60s interval
-    task.enableNotifyDelay();
-    task.begin();
+    AP_TaskUtils task(TAG, 60000, AP_TaskUtils::DELAY);
 
     while (1)
     {
         publishData();
-        task.delay();  // sleeps up to 60s, wakes on xTaskNotifyGive(taskHandle)
+        task.wait();  // sleeps up to 60s, can be woken early via AP_TaskUtils::notify(TAG)
     }
 }
 
-// Call from another task or event handler to trigger immediate wakeup
-void requestUpdate(void)
+void mqtt_task_create()
 {
-    if (taskHandle) xTaskNotifyGive(taskHandle);
+    xTaskCreatePinnedToCore(mqttTask, TAG, 4096, NULL, 5, NULL, 1);
 }
 ```
 
-### NO_PERIOD — event-driven task (no periodic interval)
+---
+
+## Task Modes
+
+### PERIODIC — precise interval (vTaskDelayUntil)
+
+Automatically compensates for task run time. Use for sensors, control loops — anything that must run at exact intervals.
 
 ```cpp
-static TaskHandle_t ttsHandle = NULL;
-
-void ttsTask(void *pvParameters)
+static void sensorTask(void *pvParameters)
 {
-    AP_TaskUtils task("ttsTask", AP_TaskUtils::NO_PERIOD);  // no periodic interval, enableNotifyDelay set automatically
-    task.begin(false);  // wait for first xTaskNotifyGive before entering loop
+    AP_TaskUtils task(TAG, 1000);  // PERIODIC is default
+
+    auto timerLog  = task.addTimer(10000);       // every 10s
+    auto timerCalib = task.addTimer(3600000);    // every hour
 
     while (1)
     {
-        // process event (e.g. read from queue and synthesize speech)
-        processEvent();
+        readSensors();
 
-        task.delay();   // sleeps forever until next xTaskNotifyGive(ttsHandle)
+        if (task.timer(timerLog))   logData();
+        if (task.timer(timerCalib)) calibrate();
+
+        task.wait();
     }
-}
-
-// Wake up the task from another context
-void triggerTTS(void)
-{
-    if (ttsHandle) xTaskNotifyGive(ttsHandle);
 }
 ```
 
-### Periodic Timers
+### DELAY — approximate interval, wakeable anytime (ulTaskNotifyTake)
+
+Sleeps for up to `intervalMs` but can be woken immediately from another task. Use for MQTT publish, display refresh — tasks that run periodically but also on demand.
 
 ```cpp
-void sensorTask(void *pvParameters)
+static void mqttTask(void *pvParameters)
 {
-    AP_TaskUtils task("sensorTask", 1000);  // 1s cycle
-    int8_t timerCalibrate = task.addTimer(3600000);        // every hour
-    int8_t timerLog = task.addTimer(10000, true);          // every 10s, runs immediately on start
-    task.begin();
+    AP_TaskUtils task(TAG, 60000, AP_TaskUtils::DELAY);
 
     while (1)
     {
-        if (task.timer(timerCalibrate)) {
-            // runs once per hour
-            calibrateSensor();
-        }
-
-        if (task.timer(timerLog)) {
-            // runs every 10s (and on first iteration)
-            logData();
-        }
-
-        readSensor();
-        task.delay();
+        publishData();
+        task.wait();  // woken by interval OR by AP_TaskUtils::notify(TAG)
     }
 }
+
+// From another task — trigger immediate publish:
+AP_TaskUtils::notify("mqttTask");
 ```
 
-### Task Without Watchdog
+### EVENT — event-driven, no interval (ulTaskNotifyTake forever)
+
+Sleeps until explicitly woken. Use for error handlers, display updates, command processors.
 
 ```cpp
-void backgroundTask(void *pvParameters)
+static void displayTask(void *pvParameters)
 {
-    AP_TaskUtils task("bgTask", 1000, false);  // watchdog disabled
-    task.begin();
+    AP_TaskUtils task(TAG, AP_TaskUtils::EVENT);  // waitBeforeStart=true is default for EVENT
 
     while (1)
     {
-        // Long running operations without watchdog timeout
-        task.delay();
+        updateDisplay();
+        task.wait();  // sleeps until notify()
+    }
+}
+
+// Wake display from sensor task:
+AP_TaskUtils::notify("displayTask");
+```
+
+### waitReady — závislosti mezi tasky
+
+`app_main` vytvoří všechny tasky a skončí. Každý task si sám počká na co potřebuje:
+
+```cpp
+// mqtt_task.cpp
+static void mqttTask(void *pvParameters)
+{
+    AP_TaskUtils task(TAG, 60000, AP_TaskUtils::DELAY);
+
+    AP_TaskUtils::waitReady("wifiTask");  // čeká než wifiTask signalizuje ready
+                                          // app_main a ostatní tasky běží normálně
+
+    initMqtt();
+
+    while (1)
+    {
+        publishData();
+        task.wait();
     }
 }
 ```
 
-### Static Utilities
+---
+
+## Shared Data
+
+### AP_Channel\<T\> — shared state (1 writer, N readers)
+
+Thread-safe latest-value store. Reader always gets the last written value without blocking.
 
 ```cpp
-uint64_t time_s  = AP_TaskUtils::seconds();
-uint64_t time_ms = AP_TaskUtils::millis();
-uint64_t time_us = AP_TaskUtils::micros();
+// interface.h
+struct SensorData { float temp; float hum; };
+extern AP_Channel<SensorData> sensorData;
 
-AP_TaskUtils::delayMs(100);  // without watchdog handling
-AP_TaskUtils::delayUs(50);
+// sensor_task.cpp — only this task writes
+sensorData.set({.temp = 23.5f, .hum = 60.0f});
+
+// display_task.cpp, mqtt_task.cpp — read anywhere
+SensorData d = sensorData.get();
+if (sensorData.isSet()) { ... }
 ```
+
+### AP_Queue\<T\> — event stream (N writers, 1 reader)
+
+Thread-safe queue. Use for commands, errors, events where every message must be processed.
+
+```cpp
+// interface.h
+struct ErrorEvent { enum Source { MQTT, SENSOR, WIFI } source; bool failed; };
+extern AP_Queue<ErrorEvent> errorQueue;
+
+// mqtt_task.cpp, sensor_task.cpp — multiple writers
+errorQueue.send({.source = ErrorEvent::MQTT, .failed = true});
+
+// error_monitor_task.cpp — single reader
+ErrorEvent e;
+if (errorQueue.receive(e)) { ... }        // blocking
+if (errorQueue.receive(e, 100)) { ... }   // with timeout
+```
+
+---
 
 ## API Reference
 
-### Instance Methods
+### AP_TaskUtils — constructors
+
+| Constructor | Description |
+|---|---|
+| `AP_TaskUtils(tag, intervalMs, mode, watchdog, waitBeforeStart)` | PERIODIC / DELAY mód |
+| `AP_TaskUtils(tag, mode, watchdog, waitBeforeStart)` | EVENT mód (no interval) |
+
+Defaults: `mode = PERIODIC`, `watchdog = true`, `waitBeforeStart = false` (EVENT constructor: `waitBeforeStart = true`)
+
+### AP_TaskUtils — instance methods
 
 | Method | Description |
-|--------|-------------|
-| `AP_TaskUtils(tag, delayMs, useWatchdog)` | Constructor (useWatchdog default true, delayMs = `NO_PERIOD` for event-driven task) |
-| `begin(startImmediately)` | Initialize task (default true, false = wait one interval / one notify before start — recommended for `NO_PERIOD`) |
-| `delay()` | Sleep with watchdog handling and run time compensation |
+|---|---|
+| `wait()` | Main blocking call — put at end of while(1) |
+| `waitBeforeStart()` | Wait one interval/event before first loop body run — call before first `wait()` |
+| `signalReady()` | Manually signal ready — unblocks all `waitReady()` callers; called automatically on first `wait()` or from `waitBeforeStart()` for EVENT mode |
+| `notify()` | Wake this task |
+| `destroy()` | Delete this task and remove from registry |
+| `suspend()` | Suspend this task |
+| `resume()` | Resume this task |
+| `enableWatchdog()` / `disableWatchdog()` | Enable/disable watchdog at runtime |
+| `isWatchdogEnabled()` | Check watchdog state |
+| `feedWatchdog()` | Manual watchdog reset (for long operations inside loop) |
+| `setInterval(ms)` | Change interval (takes effect on next `wait()`) |
+| `getInterval()` | Get current interval |
 | `getLastRunTime()` | Get last cycle run time in ms |
-| `setDelay(ms)` | Change delay interval (`NO_PERIOD` = event-driven, enables notify delay automatically) |
-| `getDelay()` | Get current delay |
-| `feedWatchdog()` | Manual watchdog reset |
-| `enableWatchdog()` | Enable watchdog at runtime |
-| `disableWatchdog()` | Disable watchdog at runtime |
-| `isWatchdogEnabled()` | Check if watchdog is enabled |
-| `enableCompensation()` | Enable run time compensation (default) |
-| `disableCompensation()` | Disable run time compensation (plain vTaskDelay) |
-| `isCompensationEnabled()` | Check if compensation is enabled |
-| `enableNotifyDelay()` | Enable notify delay mode (wakeup via `xTaskNotifyGive`) |
-| `disableNotifyDelay()` | Disable notify delay mode (back to `vTaskDelay`, ignored for `NO_PERIOD` tasks) |
-| `isNotifyDelayEnabled()` | Check if notify delay is enabled |
-| `addTimer(intervalMs, triggerOnStart)` | Create periodic timer, returns index (triggerOnStart default false) |
-| `timer(index)` | Check if timer elapsed, auto-restarts (returns true when fired) |
+| `addTimer(intervalMs, triggerOnStart)` | Add independent periodic timer, returns index |
+| `timer(index)` | Returns true when timer elapsed (auto-restarts) |
 
-### Static Methods
+### AP_TaskUtils — static cross-task operations
 
 | Method | Description |
-|--------|-------------|
-| `initWatchdog(timeoutMs, panic)` | Initialize watchdog timer |
-| `initMutex()` | Initialize global mutex |
-| `lock()` | Lock mutex (waits forever) |
-| `lock(timeoutMs)` | Lock mutex with timeout |
-| `unlock()` | Unlock mutex |
-| `seconds()` | Time since boot in s |
+|---|---|
+| `notify(name)` | Wake task by name |
+| `destroy(name)` | Delete task by name |
+| `suspend(name)` | Suspend task by name |
+| `resume(name)` | Resume task by name |
+| `waitReady(name, timeoutMs)` | Block until task signals ready (first `wait()` or manual `signalReady()`), default timeout portMAX_DELAY |
+
+### AP_TaskUtils — static utilities
+
+| Method | Description |
+|---|---|
+| `initWatchdog(timeoutMs, panic)` | Initialize WDT — call in app_main before tasks |
 | `millis()` | Time since boot in ms |
-| `micros()` | Time since boot in us |
-| `delayMs(ms)` | Delay in milliseconds |
-| `delayUs(us)` | Delay in microseconds |
+| `seconds()` | Time since boot in s |
+| `micros()` | Time since boot in µs |
+| `delayMs(ms)` | Blocking delay in ms (no watchdog reset) |
+| `delayUs(us)` | Blocking delay in µs (no watchdog reset) |
+| `initMutex()` | Initialize global mutex — call in app_main |
+| `lock()` | Lock global mutex (blocks until available) |
+| `lock(timeoutMs)` | Lock with timeout |
+| `unlock()` | Unlock global mutex |
+
+### AP_Channel\<T\>
+
+| Method | Description |
+|---|---|
+| `set(value)` | Write value (overwrites previous, never blocks) |
+| `setFromISR(value)` | Write from ISR context |
+| `get()` | Read latest value (non-blocking, returns `T{}` if never set) |
+| `isSet()` | Returns true if value was written at least once |
+
+### AP_Queue\<T\>
+
+| Method | Description |
+|---|---|
+| `send(item)` | Send item (blocks until space available) |
+| `send(item, timeoutMs)` | Send with timeout (0 = non-blocking) |
+| `sendFromISR(item)` | Send from ISR context |
+| `receive(item)` | Receive item (blocks until item available) |
+| `receive(item, timeoutMs)` | Receive with timeout (0 = non-blocking) |
+| `available()` | Number of items waiting in queue |
+| `clear()` | Flush queue |
 
 ## Author
 

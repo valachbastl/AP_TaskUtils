@@ -1,69 +1,33 @@
 # Changelog
 
-## [1.5.1] - 2026-03-31
+## [2.0.0] - 2026-04-07
 
-### Fixed
-- README: NO_PERIOD priklad opraven - `begin(false)` a `task.delay()` na konci smycky (spravny vzor pro event-driven task)
-- README: `begin()` API tabulka - doplnena poznamka ze pro `NO_PERIOD` je doporucen `begin(false)`
-- Log zprava v `disableNotifyDelay()` prelozena do anglictiny (konzistentni s ostatnimi log zpravami)
+Complete rewrite. New API — not backward compatible with v1.x.
 
-## [1.5.0] - 2026-03-30
-
-### Added
-- Konstanta `NO_PERIOD` (`UINT32_MAX`) pro tasky bez periodickeho volani - task ceka v `delay()` na `xTaskNotifyGive()` s `portMAX_DELAY`
-- `setDelay(NO_PERIOD)` automaticky zapne `enableNotifyDelay()`
-- `begin(false)` s `NO_PERIOD` ceka na prvni `xTaskNotifyGive()` pred prvnim pruchodem
-
-### Changed
-- Konstruktor nyni vola `setDelay()` interně - logika inicializace na jednom miste
-- `disableNotifyDelay()` ignoruje volani pokud je nastaven `NO_PERIOD` (s varovanim v logu)
-
-## [1.4.0] - 2026-02-16
+### Breaking Changes
+- Constructor signature changed — interval and mode are now separate parameters
+- `NO_PERIOD` mode renamed to `EVENT`
+- `begin()` removed — initialization happens automatically in the constructor
+- Task registry, `AP_Channel<T>`, `AP_Queue<T>` and `waitReady()` are new concepts with no v1.x equivalent
 
 ### Added
-- Timer system `addTimer(intervalMs, triggerOnStart)`, `timer(index)` - periodicky spousteny timer nezavisly na delay intervalu tasku
-- Libovolny pocet timeru na task (dynamicky pres `std::vector`)
-- Volitelny `triggerOnStart` parametr - spusti timer hned pri prvnim volani `timer()` (default false)
-
-## [1.3.0] - 2026-02-13
-
-### Added
-- Notify delay rezim `enableNotifyDelay()`, `disableNotifyDelay()`, `isNotifyDelayEnabled()` - delay() pouzije `ulTaskNotifyTake` misto `vTaskDelay`, coz umozni okamzite probuzeni tasku pres `xTaskNotifyGive`
-- Staticka metoda `seconds()` - cas od startu v sekundach
-
-## [1.2.1] - 2026-02-06
-
-### Added
-- Metody `enableCompensation()`, `disableCompensation()`, `isCompensationEnabled()` pro volbu zda pouzit kompenzaci doby behu
-- Kompenzace je ve vychozim stavu zapnuta (zpetne kompatibilni s v1.2.0)
-
-## [1.2.0] - 2026-02-06
-
-### Changed
-- Metoda `delay()` nyni kompenzuje dobu behu tasku - automaticky dopocita zbytkovy cas tak, aby celkovy cyklus odpovidal nastavenemu intervalu
-- Pokud task pretahne interval, delay je minimalne 1ms (task se nezablokuje)
-
-### Added
-- Nova metoda `getLastRunTime()` vraci dobu behu posledniho cyklu v ms (pro diagnostiku)
-- Metoda `begin(bool startImmediately)` - volitelne zpozdeni startu tasku o jeden interval
-
-## [1.1.0] - 2026-01-30
-
-### Added
-- Moznost vypnout watchdog pro task v konstruktoru `AP_TaskUtils(tag, delayMs, useWatchdog)`
-- Runtime metody `enableWatchdog()`, `disableWatchdog()`, `isWatchdogEnabled()`
-- Logovani stavu watchdogu pri startu tasku
-
-### Changed
-- Metody `begin()`, `delay()`, `feedWatchdog()` nyni respektuji nastaveni watchdogu
-
-## [1.0.0] - 2026-01-27
-
-### Added
-- Inicializace watchdogu `initWatchdog(timeoutMs, panic)`
-- Task helper metody `begin()`, `delay()`, `setDelay()`, `getDelay()`
-- Manualni watchdog reset `feedWatchdog()`
-- Casove funkce `millis()`, `micros()`
-- Staticke delay funkce `delayMs()`, `delayUs()`
-- Automaticke odhlaseni z watchdogu behem spanku tasku
-- Globalni mutex `initMutex()`, `lock()`, `lock(timeoutMs)`, `unlock()`
+- Three explicit task modes: `PERIODIC` (vTaskDelayUntil), `DELAY` (ulTaskNotifyTake + timeout), `EVENT` (ulTaskNotifyTake without timeout)
+- Second constructor for EVENT mode without interval parameter
+- `waitBeforeStart()` — method and constructor parameter; waits one interval/event before first loop iteration; for EVENT mode defaults to `true`
+- Task registry — each task registers itself in the constructor by name (std::vector, no limit)
+- `AP_TaskUtils::notify(name)` — wake task by name without storing TaskHandle_t
+- `AP_TaskUtils::destroy(name)` — delete task by name and remove from registry
+- `AP_TaskUtils::suspend(name)` / `resume(name)` — suspend/resume task by name
+- Instance methods `notify()`, `destroy()`, `suspend()`, `resume()` operating on own handle
+- `AP_Channel<T>` — shared state for 1 writer and N readers (xQueueOverwrite, thread-safe, ISR-safe)
+- `AP_Queue<T>` — event stream for N writers and 1 reader (FreeRTOS queue wrapper, ISR-safe)
+- New files `AP_Channel.h` and `AP_Queue.h` — can be included standalone or via `AP_TaskUtils.h`
+- PERIODIC mode uses `vTaskDelayUntil` — precise interval with automatic run time compensation
+- DELAY mode uses `ulTaskNotifyTake` with timeout — approximate interval, wakeable anytime
+- EVENT mode uses `ulTaskNotifyTake` without timeout — purely event-driven, woken only via `notify()`
+- Watchdog configurable in constructor and at runtime (`enableWatchdog()` / `disableWatchdog()`)
+- Timers (`addTimer()` / `timer()`) — unlimited count, independent of task interval
+- `AP_TaskUtils::waitReady(name, timeoutMs)` — blocks calling task until target task signals ready; allows expressing dependencies between tasks without blocking app_main
+- `signalReady()` — signals ready; called automatically on first `wait()`, or from `waitBeforeStart()` for EVENT mode before blocking; can also be called manually
+- Global mutex (`initMutex()` / `lock()` / `unlock()`) for simple shared resource access
+- Static utilities: `millis()`, `seconds()`, `micros()`, `delayMs()`, `delayUs()`, `initWatchdog()`
