@@ -3,6 +3,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "freertos/event_groups.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "esp_log.h"
@@ -96,6 +97,37 @@ public:
      *          }
      */
     void sleep();
+
+    /**
+     * @brief Block until all specified bits are set in an event group.
+     *        Bits are NOT cleared on exit — race-condition-free: if bits are already
+     *        set before the call, returns immediately. Watchdog is handled the same
+     *        way as in wait() and sleep() — removed before blocking, re-added after.
+     *
+     *        Typical usage — wait for ethernet/wifi before MQTT init:
+     *          task.waitEvent(ethEventGroup, ETH_GOT_IP_BIT);
+     *          mqtt_init();
+     *
+     * @param group Event group handle (created by xEventGroupCreate())
+     * @param bits  Bit mask to wait for (all bits must be set)
+     */
+    void waitEvent(EventGroupHandle_t group, EventBits_t bits);
+
+    /**
+     * @brief Block until the target task signals ready.
+     *        Call at the start of a task function to express dependencies between tasks.
+     *        Only the calling task is blocked — app_main and other tasks continue normally.
+     *        Watchdog is handled the same way as in wait() and sleep() — removed before
+     *        blocking, re-added after.
+     *
+     *        Example:
+     *          task.waitReady("wifiTask");  // wait until wifiTask signals ready
+     *
+     * @param name      Name of the task to wait for
+     * @param timeoutMs Maximum wait time in ms (default portMAX_DELAY = wait forever)
+     * @return true if task signaled ready, false on timeout (logs warning)
+     */
+    bool waitReady(const char *name, uint32_t timeoutMs = portMAX_DELAY);
 
     /**
      * @brief Wait one interval/event before first loop iteration.
@@ -215,20 +247,6 @@ public:
      */
     static bool resume(const char *name);
 
-    /**
-     * @brief Block until the target task signals ready.
-     *        Call at the start of a task function to express dependencies between tasks.
-     *        Only the calling task is blocked — app_main and other tasks continue normally.
-     *
-     *        Example:
-     *          AP_TaskUtils::waitReady("wifiTask");  // wait until wifiTask signals ready
-     *
-     * @param name      Name of the task to wait for
-     * @param timeoutMs Maximum wait time in ms (default portMAX_DELAY = wait forever)
-     * @return true if task signaled ready, false on timeout (logs warning)
-     */
-    static bool waitReady(const char *name, uint32_t timeoutMs = portMAX_DELAY);
-
     // -------------------------------------------------------------------------
     //  Static — utilities
     // -------------------------------------------------------------------------
@@ -310,6 +328,7 @@ private:
     std::vector<TimerEntry> _timers;
 
     static SemaphoreHandle_t           _mutex;
+    static portMUX_TYPE                _registryMux;
     static std::vector<RegistryEntry>  _registry;
     static std::vector<WaiterEntry>    _waiters;
 

@@ -6,9 +6,10 @@
 /*  Static variables                                                           */
 /* ========================================================================== */
 
-SemaphoreHandle_t                        AP_TaskUtils::_mutex    = nullptr;
-std::vector<AP_TaskUtils::RegistryEntry> AP_TaskUtils::_registry = {};
-std::vector<AP_TaskUtils::WaiterEntry>   AP_TaskUtils::_waiters  = {};
+SemaphoreHandle_t                        AP_TaskUtils::_mutex      = nullptr;
+portMUX_TYPE                             AP_TaskUtils::_registryMux = portMUX_INITIALIZER_UNLOCKED;
+std::vector<AP_TaskUtils::RegistryEntry> AP_TaskUtils::_registry   = {};
+std::vector<AP_TaskUtils::WaiterEntry>   AP_TaskUtils::_waiters    = {};
 
 /* ========================================================================== */
 /*  Constructors                                                               */
@@ -67,29 +68,40 @@ AP_TaskUtils::AP_TaskUtils(const char *tag, Mode mode, bool watchdog, bool waitB
 
 void AP_TaskUtils::_registerTask()
 {
+    portENTER_CRITICAL(&_registryMux);
     for (const auto &e : _registry) {
         if (strcmp(e.name, _tag) == 0) {
+            portEXIT_CRITICAL(&_registryMux);
             ESP_LOGE(_tag, "Task '%s' is already registered — duplicate name!", _tag);
             return;
         }
     }
     _registry.push_back({_tag, _taskHandle, false});
+    portEXIT_CRITICAL(&_registryMux);
 }
 
 void AP_TaskUtils::_unregisterByHandle(TaskHandle_t handle)
 {
+    portENTER_CRITICAL(&_registryMux);
     _registry.erase(
         std::remove_if(_registry.begin(), _registry.end(),
             [handle](const RegistryEntry &e) { return e.handle == handle; }),
         _registry.end()
     );
+    portEXIT_CRITICAL(&_registryMux);
 }
 
 TaskHandle_t AP_TaskUtils::_findHandle(const char *name)
 {
+    portENTER_CRITICAL(&_registryMux);
     for (const auto &e : _registry) {
-        if (strcmp(e.name, name) == 0) return e.handle;
+        if (strcmp(e.name, name) == 0) {
+            TaskHandle_t h = e.handle;
+            portEXIT_CRITICAL(&_registryMux);
+            return h;
+        }
     }
+    portEXIT_CRITICAL(&_registryMux);
     return nullptr;
 }
 
@@ -102,17 +114,27 @@ void AP_TaskUtils::signalReady()
     if (_readySignaled) return;
     _readySignaled = true;
 
+    // Collect semaphores to give under lock, then give them outside lock
+    // to avoid holding the spinlock while calling FreeRTOS primitives
+    SemaphoreHandle_t toNotify[8];
+    int notifyCount = 0;
+
+    portENTER_CRITICAL(&_registryMux);
     for (auto &e : _registry) {
         if (e.handle == _taskHandle) {
             e.ready = true;
             break;
         }
     }
-
     for (const auto &w : _waiters) {
-        if (strcmp(w.name, _tag) == 0) {
-            xSemaphoreGive(w.sem);
+        if (strcmp(w.name, _tag) == 0 && notifyCount < 8) {
+            toNotify[notifyCount++] = w.sem;
         }
+    }
+    portEXIT_CRITICAL(&_registryMux);
+
+    for (int i = 0; i < notifyCount; i++) {
+        xSemaphoreGive(toNotify[i]);
     }
 }
 
@@ -156,6 +178,75 @@ void AP_TaskUtils::sleep()
     if (_useWatchdog) esp_task_wdt_add(nullptr);
 
     _cycleStart = millis();
+}
+
+void AP_TaskUtils::waitEvent(EventGroupHandle_t group, EventBits_t bits)
+{
+    signalReady();
+
+    _lastRunTime = (uint32_t)(millis() - _cycleStart);
+
+    if (_useWatchdog) esp_task_wdt_delete(nullptr);
+    xEventGroupWaitBits(group, bits, pdFALSE, pdTRUE, portMAX_DELAY);
+    if (_useWatchdog) esp_task_wdt_add(nullptr);
+
+    _cycleStart = millis();
+}
+
+bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
+{
+    signalReady();
+
+    _lastRunTime = (uint32_t)(millis() - _cycleStart);
+
+    // Fast path — already ready, no semaphore needed
+    portENTER_CRITICAL(&_registryMux);
+    for (const auto &e : _registry) {
+        if (strcmp(e.name, name) == 0 && e.ready) {
+            portEXIT_CRITICAL(&_registryMux);
+            _cycleStart = millis();
+            return true;
+        }
+    }
+    portEXIT_CRITICAL(&_registryMux);
+
+    // Create semaphore outside critical section, then register under lock
+    // Re-check ready after lock to close the window between the two critical sections
+    SemaphoreHandle_t sem = xSemaphoreCreateBinary();
+
+    portENTER_CRITICAL(&_registryMux);
+    for (const auto &e : _registry) {
+        if (strcmp(e.name, name) == 0 && e.ready) {
+            portEXIT_CRITICAL(&_registryMux);
+            vSemaphoreDelete(sem);
+            _cycleStart = millis();
+            return true;
+        }
+    }
+    _waiters.push_back({name, sem});
+    portEXIT_CRITICAL(&_registryMux);
+
+    if (_useWatchdog) esp_task_wdt_delete(nullptr);
+
+    TickType_t ticks = (timeoutMs == portMAX_DELAY) ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMs);
+    bool ok = xSemaphoreTake(sem, ticks) == pdTRUE;
+
+    if (_useWatchdog) esp_task_wdt_add(nullptr);
+
+    portENTER_CRITICAL(&_registryMux);
+    _waiters.erase(
+        std::remove_if(_waiters.begin(), _waiters.end(),
+            [sem](const WaiterEntry &e) { return e.sem == sem; }),
+        _waiters.end()
+    );
+    portEXIT_CRITICAL(&_registryMux);
+
+    vSemaphoreDelete(sem);
+
+    _cycleStart = millis();
+
+    if (!ok) ESP_LOGW("AP_TaskUtils", "waitReady('%s'): timeout", name);
+    return ok;
 }
 
 void AP_TaskUtils::waitBeforeStart()
@@ -337,30 +428,6 @@ bool AP_TaskUtils::resume(const char *name)
     }
     vTaskResume(h);
     return true;
-}
-
-bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
-{
-    // Task is already ready — no need to wait
-    for (const auto &e : _registry) {
-        if (strcmp(e.name, name) == 0 && e.ready) return true;
-    }
-
-    SemaphoreHandle_t sem = xSemaphoreCreateBinary();
-    _waiters.push_back({name, sem});
-
-    TickType_t ticks = (timeoutMs == portMAX_DELAY) ? portMAX_DELAY : pdMS_TO_TICKS(timeoutMs);
-    bool ok = xSemaphoreTake(sem, ticks) == pdTRUE;
-
-    _waiters.erase(
-        std::remove_if(_waiters.begin(), _waiters.end(),
-            [sem](const WaiterEntry &e) { return e.sem == sem; }),
-        _waiters.end()
-    );
-    vSemaphoreDelete(sem);
-
-    if (!ok) ESP_LOGW("AP_TaskUtils", "waitReady('%s'): timeout", name);
-    return ok;
 }
 
 /* ========================================================================== */

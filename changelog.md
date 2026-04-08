@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.2.0] - 2026-04-08
+
+### Added
+- `waitEvent(group, bits)` — instance method; blocks the calling task until all specified bits are set in an EventGroup. Bits are NOT cleared on exit (pdFALSE), so the call is race-condition-free: if bits are already set before the call, it returns immediately. Watchdog is handled identically to `sleep()` — removed before blocking, re-added on wake. Typical use: wait for network link-up signaled by an `EventGroupHandle_t` (set in an ISR or event handler) before initializing MQTT or other network-dependent services.
+
+### Changed
+- `waitReady(name, timeoutMs)` promoted from static to instance method — now handles watchdog identically to `sleep()` and `waitEvent()` (removed before blocking, re-added on wake), and correctly updates `_lastRunTime` / `_cycleStart` so `getLastRunTime()` remains accurate after the wait. Call site changes from `AP_TaskUtils::waitReady(...)` to `task.waitReady(...)`.
+
+### Fixed
+- Thread-safety of internal task registry (`_registry`, `_waiters`) on dual-core ESP32. Concurrent calls to `_registerTask()` from tasks running on different cores could corrupt the `std::vector` internal state during reallocation (heap corruption, TLSF assert). Fixed by protecting all registry and waiters access with a `portMUX_TYPE` spinlock (`_registryMux`) that is statically initialized — no user action required, fully transparent.
+- `waitReady()` no longer allocates heap (semaphore creation, `_waiters.push_back`) inside the critical section — semaphore is created before acquiring the spinlock, with a double-check for the ready state after re-acquiring the lock to close the race window.
+
 ## [2.1.0] - 2026-04-08
 
 ### Added

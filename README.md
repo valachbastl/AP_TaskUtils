@@ -21,7 +21,7 @@ lib_deps =
     https://github.com/valachbastl/AP_TaskUtils.git
 
 # Or pinned to version:
-    https://github.com/valachbastl/AP_TaskUtils.git#v2.1.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v2.2.0
 ```
 
 ## Quick Start
@@ -137,7 +137,7 @@ static void displayTask(void *pvParameters)
 AP_TaskUtils::notify("displayTask");
 ```
 
-### sleep() — wait for a one-time event before starting the loop
+### sleep() — wait for a one-time notify before starting the loop
 
 `sleep()` blocks until the next `notify()` regardless of task mode or interval. Use when a task must wait for a one-time external event (e.g. IP address obtained) before it can initialize and enter its main loop. Unlike `waitReady()`, the call is made from inside the task itself.
 
@@ -163,6 +163,37 @@ static void mqttTask(void *pvParameters)
 AP_TaskUtils::notify("mqttTask");
 ```
 
+### waitEvent() — wait for a FreeRTOS EventGroup bit
+
+`waitEvent()` blocks until all specified bits are set in an EventGroup. Bits are **not cleared** on exit — race-condition-free: if the bit was already set before the task called `waitEvent()`, it returns immediately. Watchdog is handled identically to `sleep()`.
+
+Use instead of `sleep()` when the signal comes from an ISR or event handler that runs before the task is created.
+
+```cpp
+// ethernet_init.h
+#define ETH_GOT_IP_BIT BIT0
+static EventGroupHandle_t ethEventGroup = NULL;
+
+// In the ETHERNET_EVENT_CONNECTED handler (static IP — address is already configured):
+if (ethEventGroup) xEventGroupSetBits(ethEventGroup, ETH_GOT_IP_BIT);
+
+// mqtt_task.cpp
+static void mqttTask(void *pvParameters)
+{
+    AP_TaskUtils task(TAG, 120000, AP_TaskUtils::DELAY);
+
+    task.waitEvent(ethEventGroup, ETH_GOT_IP_BIT);  // race-condition-free, watchdog-safe
+
+    initMqtt();
+
+    while (1)
+    {
+        publishData();
+        task.wait();
+    }
+}
+```
+
 ### waitReady — task dependencies
 
 `app_main` creates all tasks and returns. Each task waits for its own dependencies:
@@ -173,8 +204,8 @@ static void mqttTask(void *pvParameters)
 {
     AP_TaskUtils task(TAG, 60000, AP_TaskUtils::DELAY);
 
-    AP_TaskUtils::waitReady("wifiTask");  // wait until wifiTask signals ready
-                                          // app_main and other tasks continue normally
+    task.waitReady("wifiTask");  // wait until wifiTask signals ready
+                                 // watchdog-safe, app_main and other tasks continue normally
 
     initMqtt();
 
@@ -244,6 +275,8 @@ Defaults: `mode = PERIODIC`, `watchdog = true`, `waitBeforeStart = false` (EVENT
 |---|---|
 | `wait()` | Main blocking call — put at end of while(1) |
 | `sleep()` | Block until next `notify()` — regardless of mode and interval; resets PERIODIC timer on wake |
+| `waitEvent(group, bits)` | Block until EventGroup bits are set — race-condition-free, watchdog-safe |
+| `waitReady(name, timeoutMs)` | Block until named task signals ready — watchdog-safe, default timeout portMAX_DELAY |
 | `waitBeforeStart()` | Wait one interval/event before first loop body run — call before first `wait()` |
 | `signalReady()` | Manually signal ready — unblocks all `waitReady()` callers; called automatically on first `wait()` or from `waitBeforeStart()` for EVENT mode |
 | `notify()` | Wake this task |
@@ -267,7 +300,6 @@ Defaults: `mode = PERIODIC`, `watchdog = true`, `waitBeforeStart = false` (EVENT
 | `destroy(name)` | Delete task by name |
 | `suspend(name)` | Suspend task by name |
 | `resume(name)` | Resume task by name |
-| `waitReady(name, timeoutMs)` | Block until task signals ready (first `wait()` or manual `signalReady()`), default timeout portMAX_DELAY |
 
 ### AP_TaskUtils — static utilities
 
