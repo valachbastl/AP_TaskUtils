@@ -21,7 +21,7 @@ lib_deps =
     https://github.com/valachbastl/AP_TaskUtils.git
 
 # Or pinned to version:
-    https://github.com/valachbastl/AP_TaskUtils.git#v2.0.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v2.1.0
 ```
 
 ## Quick Start
@@ -137,6 +137,32 @@ static void displayTask(void *pvParameters)
 AP_TaskUtils::notify("displayTask");
 ```
 
+### sleep() — wait for a one-time event before starting the loop
+
+`sleep()` blocks until the next `notify()` regardless of task mode or interval. Use when a task must wait for a one-time external event (e.g. IP address obtained) before it can initialize and enter its main loop. Unlike `waitReady()`, the call is made from inside the task itself.
+
+```cpp
+// mqtt_task.cpp
+static void mqttTask(void *pvParameters)
+{
+    AP_TaskUtils task(TAG, 120000, AP_TaskUtils::DELAY);
+
+    task.sleep();  // wait here until ethernet_init calls AP_TaskUtils::notify("mqttTask")
+                   // watchdog is removed during sleep, restored on wake
+
+    initMqtt();    // IP is available now — safe to connect
+
+    while (1)
+    {
+        publishData();
+        task.wait();  // normal 120s DELAY interval, also wakeable via notify()
+    }
+}
+
+// ethernet_init.cpp — called when IP is obtained:
+AP_TaskUtils::notify("mqttTask");
+```
+
 ### waitReady — task dependencies
 
 `app_main` creates all tasks and returns. Each task waits for its own dependencies:
@@ -217,6 +243,7 @@ Defaults: `mode = PERIODIC`, `watchdog = true`, `waitBeforeStart = false` (EVENT
 | Method | Description |
 |---|---|
 | `wait()` | Main blocking call — put at end of while(1) |
+| `sleep()` | Block until next `notify()` — regardless of mode and interval; resets PERIODIC timer on wake |
 | `waitBeforeStart()` | Wait one interval/event before first loop body run — call before first `wait()` |
 | `signalReady()` | Manually signal ready — unblocks all `waitReady()` callers; called automatically on first `wait()` or from `waitBeforeStart()` for EVENT mode |
 | `notify()` | Wake this task |

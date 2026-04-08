@@ -141,6 +141,23 @@ void AP_TaskUtils::wait()
     _cycleStart = millis();
 }
 
+void AP_TaskUtils::sleep()
+{
+    signalReady();
+
+    _lastRunTime = (uint32_t)(millis() - _cycleStart);
+
+    if (_useWatchdog) esp_task_wdt_delete(nullptr);
+
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+    if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
+
+    if (_useWatchdog) esp_task_wdt_add(nullptr);
+
+    _cycleStart = millis();
+}
+
 void AP_TaskUtils::waitBeforeStart()
 {
     if (_initialWaitDone) {

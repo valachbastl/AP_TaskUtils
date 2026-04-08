@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.1.0] - 2026-04-08
+
+### Added
+- `sleep()` — blocks the task until the next `notify()`, regardless of mode and interval. Equivalent to EVENT-mode wait but callable from any mode. Watchdog is automatically removed before blocking and re-added after waking. For PERIODIC mode, `_lastWakeTime` is reset on wake so the next `wait()` starts a clean interval. Typical use: wait for a one-time event (e.g. IP address obtained) before entering the main loop.
+
 ## [2.0.0] - 2026-04-07
 
 Complete rewrite. New API — not backward compatible with v1.x.

@@ -82,6 +82,22 @@ public:
     void wait();
 
     /**
+     * @brief Zablokuje task až do příchodu notify() — bez timeoutu, bez ohledu na mód.
+     *        Funguje kdekoliv v těle tasku (před smyčkou i uvnitř while(1)).
+     *        Watchdog se chová stejně jako v wait() — task je dočasně odhlášen.
+     *        Po probuzení se PERIODIC timer resetuje, takže wait() pokračuje správně.
+     *
+     *        Typické použití — čekání na síťovou událost před prvním cyklem:
+     *          task.sleep();       // spí dokud ethernet_init nezavolá notify()
+     *          mqtt_init();
+     *          while (1) {
+     *              publish();
+     *              task.wait();    // normální DELAY interval nebo notify
+     *          }
+     */
+    void sleep();
+
+    /**
      * @brief Wait one interval/event before first loop iteration.
      *        Call before first wait(). Has no effect after initialization (logs warning).
      *        For EVENT mode: calls signalReady() automatically before blocking.
