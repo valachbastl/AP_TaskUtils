@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.3.0] - 2026-06-01
+
+### Added
+- `notifyAfter(ms)` — instance method; watchdog-safe sleep for `ms` ms via a one-shot `esp_timer` + `sleep()`. Wakeable earlier by `notify()`.
+- `notifyAfter(name, ms)` — static method; wakes the named task after `ms` ms without blocking the caller. Deferred counterpart to `notify(name)`.
+
 ## [2.2.0] - 2026-04-08
 
 ### Added

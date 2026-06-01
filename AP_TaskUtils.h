@@ -99,6 +99,19 @@ public:
     void sleep();
 
     /**
+     * @brief Uspí tento task na ms milisekund — watchdog-safe, lze probudit dříve přes notify().
+     *        Naplánuje one-shot timer který probudí tento task, pak zavolá sleep().
+     *
+     *        Typické použití — stabilizace sítě před prvním requestem:
+     *          task.waitEvent(netEventGroup, NET_GOT_IP_BIT);
+     *          task.notifyAfter(5000);  // čeká 5s, watchdog-safe
+     *          ota.check();
+     *
+     * @param ms Čas čekání v milisekundách
+     */
+    void notifyAfter(uint32_t ms);
+
+    /**
      * @brief Block until all specified bits are set in an event group.
      *        Bits are NOT cleared on exit — race-condition-free: if bits are already
      *        set before the call, returns immediately. Watchdog is handled the same
@@ -230,6 +243,22 @@ public:
     static bool notify(const char *name);
 
     /**
+     * @brief Wake task by name after a delay — non-blocking one-shot timer.
+     *        Combines with DELAY mode: task.wait() returns early when timer fires.
+     *        Typical use: deferred wakeup after network connects (stack stabilization).
+     *        The task name must remain valid until the timer fires — use string literals.
+     *
+     *        Example:
+     *          task.waitEvent(netEventGroup, NET_GOT_IP_BIT);
+     *          AP_TaskUtils::notifyAfter("otaTask", 5000); // wake after 5s
+     *          // task.wait() in loop returns after 5s, not after full interval
+     *
+     * @param name  Task name in registry (string literal recommended)
+     * @param ms    Delay in milliseconds
+     */
+    static void notifyAfter(const char *name, uint32_t ms);
+
+    /**
      * @brief Delete task by name (vTaskDelete) and remove from registry
      * @return false if task was not found in registry (logs warning)
      */
@@ -324,6 +353,7 @@ private:
     TickType_t   _lastWakeTime;
     uint64_t     _cycleStart;
     uint32_t     _lastRunTime;
+    esp_timer_handle_t _oneShot = nullptr;  // reusable one-shot timer for notifyAfter(ms)
 
     std::vector<TimerEntry> _timers;
 

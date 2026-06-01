@@ -180,6 +180,33 @@ void AP_TaskUtils::sleep()
     _cycleStart = millis();
 }
 
+void AP_TaskUtils::notifyAfter(uint32_t ms)
+{
+    // Reusable one-shot timer — created once, restarted on each call. No leak.
+    if (!_oneShot) {
+        esp_timer_create_args_t args = {};
+        args.callback = [](void *arg) { xTaskNotifyGive((TaskHandle_t)arg); };
+        args.arg      = (void *)_taskHandle;
+        args.name     = "AP_notifyAfter";
+        if (esp_timer_create(&args, &_oneShot) != ESP_OK) {
+            ESP_LOGW(_tag, "notifyAfter: timer create failed");
+            sleep();  // fallback — wait for external notify() only
+            return;
+        }
+    }
+
+    // Arm the timer (esp_timer_stop first is harmless if already stopped).
+    esp_timer_stop(_oneShot);
+    esp_timer_start_once(_oneShot, (uint64_t)ms * 1000ULL);
+
+    // Block — woken by the timer or an earlier external notify()
+    sleep();
+
+    // Cancel the timer if we were woken externally before it fired,
+    // so no stale notification lingers for the next wait()/sleep().
+    esp_timer_stop(_oneShot);
+}
+
 void AP_TaskUtils::waitEvent(EventGroupHandle_t group, EventBits_t bits)
 {
     signalReady();
@@ -285,6 +312,11 @@ void AP_TaskUtils::notify()
 
 void AP_TaskUtils::destroy()
 {
+    if (_oneShot) {
+        esp_timer_stop(_oneShot);
+        esp_timer_delete(_oneShot);
+        _oneShot = nullptr;
+    }
     disableWatchdog();
     _unregisterByHandle(_taskHandle);
     vTaskDelete(nullptr);
@@ -394,6 +426,32 @@ bool AP_TaskUtils::notify(const char *name)
     }
     xTaskNotifyGive(h);
     return true;
+}
+
+void AP_TaskUtils::notifyAfter(const char *name, uint32_t ms)
+{
+    // Fire-and-forget — context holds the timer so the callback can self-delete it.
+    // Deleting a one-shot timer from its own callback is safe with the default task
+    // dispatch: the timer is already removed from the active list before the callback runs.
+    struct OneShotCtx { esp_timer_handle_t timer; const char *name; };
+    OneShotCtx *ctx = new OneShotCtx{nullptr, name};
+
+    esp_timer_create_args_t args = {};
+    args.callback = [](void *arg) {
+        OneShotCtx *c = static_cast<OneShotCtx *>(arg);
+        AP_TaskUtils::notify(c->name);
+        esp_timer_delete(c->timer);
+        delete c;
+    };
+    args.arg  = ctx;
+    args.name = "AP_notifyAfter";
+
+    if (esp_timer_create(&args, &ctx->timer) == ESP_OK) {
+        esp_timer_start_once(ctx->timer, (uint64_t)ms * 1000ULL);
+    } else {
+        ESP_LOGW("AP_TaskUtils", "notifyAfter('%s'): timer create failed", name);
+        delete ctx;
+    }
 }
 
 bool AP_TaskUtils::destroy(const char *name)

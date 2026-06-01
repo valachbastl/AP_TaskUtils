@@ -21,7 +21,7 @@ lib_deps =
     https://github.com/valachbastl/AP_TaskUtils.git
 
 # Or pinned to version:
-    https://github.com/valachbastl/AP_TaskUtils.git#v2.2.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v2.3.0
 ```
 
 ## Quick Start
@@ -194,6 +194,28 @@ static void mqttTask(void *pvParameters)
 }
 ```
 
+### notifyAfter() — watchdog-safe delay
+
+`notifyAfter(ms)` suspends the task for `ms` milliseconds without keeping the watchdog subscribed — safe for delays longer than the watchdog timeout, unlike `delayMs()`. The task can be woken earlier by an external `notify()`. Typical use: a stabilization delay after the network link comes up, before the first request.
+
+```cpp
+static void otaTask(void *pvParameters)
+{
+    AP_TaskUtils task(TAG, 3600000, AP_TaskUtils::DELAY);
+
+    task.waitEvent(netEventGroup, NET_GOT_IP_BIT);  // wait for IP
+    task.notifyAfter(5000);                          // 5s WiFi/DNS stabilization, watchdog-safe
+
+    while (1)
+    {
+        ota.check();
+        task.wait();
+    }
+}
+```
+
+The static form `AP_TaskUtils::notifyAfter("otaTask", 5000)` schedules the wake from another context without blocking the caller — a deferred counterpart to `notify(name)`.
+
 ### waitReady — task dependencies
 
 `app_main` creates all tasks and returns. Each task waits for its own dependencies:
@@ -275,6 +297,7 @@ Defaults: `mode = PERIODIC`, `watchdog = true`, `waitBeforeStart = false` (EVENT
 |---|---|
 | `wait()` | Main blocking call — put at end of while(1) |
 | `sleep()` | Block until next `notify()` — regardless of mode and interval; resets PERIODIC timer on wake |
+| `notifyAfter(ms)` | Watchdog-safe sleep for `ms` ms (one-shot timer + `sleep()`); wakeable earlier via `notify()` |
 | `waitEvent(group, bits)` | Block until EventGroup bits are set — race-condition-free, watchdog-safe |
 | `waitReady(name, timeoutMs)` | Block until named task signals ready — watchdog-safe, default timeout portMAX_DELAY |
 | `waitBeforeStart()` | Wait one interval/event before first loop body run — call before first `wait()` |
@@ -297,6 +320,7 @@ Defaults: `mode = PERIODIC`, `watchdog = true`, `waitBeforeStart = false` (EVENT
 | Method | Description |
 |---|---|
 | `notify(name)` | Wake task by name |
+| `notifyAfter(name, ms)` | Wake task by name after `ms` ms (one-shot timer, non-blocking) |
 | `destroy(name)` | Delete task by name |
 | `suspend(name)` | Suspend task by name |
 | `resume(name)` | Resume task by name |
