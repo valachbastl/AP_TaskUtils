@@ -358,7 +358,7 @@ private:
     std::vector<TimerEntry> _timers;
 
     static SemaphoreHandle_t           _mutex;
-    static portMUX_TYPE                _registryMux;
+    static SemaphoreHandle_t           _registryMutex;  // chrani _registry + _waiters (mutex, ne spinlock → lze alokovat uvnitr zamku)
     static std::vector<RegistryEntry>  _registry;
     static std::vector<WaiterEntry>    _waiters;
 

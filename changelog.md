@@ -1,5 +1,19 @@
 # Changelog
 
+## [2.4.0] - 2026-06-11
+
+### Fixed
+- `destroy(name)` (static) nyni odhlasi cilovy task z Task Watchdogu (`esp_task_wdt_delete`) pred `vTaskDelete`. Drive smazani tasku se zapnutym watchdogem z jineho tasku nechalo task registrovany v TWDT → watchdog panic. Instancni `destroy()` to uz osetreno mel.
+- `signalReady()` uz neomezuje pocet notifikovanych `waitReady()` cekatelu na 8 (pevny buffer) — 9. a dalsi cekatel na stejny task mohl viset. Nyni se sbiraji do dynamickeho vektoru.
+
+### Changed
+- Zamek registry/waiters prepnut z `portMUX_TYPE` spinlocku na FreeRTOS mutex (`_registryMutex`, vytvoreny pri static-init — zadny init call, transparentni). Alokace (`std::vector` rust, vytvoreni semaforu) uvnitr zamku je nyni legalni dle pravidel ESP-IDF; spinlock ji zakazoval. Dual-core vzajemne vylouceni registry (oprava z 2.2.0) zustava zachovano. Registry operace podle jmena uz nejsou volatelne z ISR (z ISR se nikdy nepouzivaly).
+- Licence zmenena na MIT (drive UNLICENSED).
+
+### Added
+- `waitReady()` kontroluje navratovou hodnotu `xSemaphoreCreateBinary()` (pri selhani alokace vrati false misto pristupu na null).
+- `AP_Channel<T>` / `AP_Queue<T>` metody osetruji null queue (selhani `xQueueCreate` pri OOM) — degraduji gracefully (no-op / false / `T{}` / 0) misto pristupu na null.
+
 ## [2.3.0] - 2026-06-01
 
 ### Added

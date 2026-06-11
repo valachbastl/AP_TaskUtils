@@ -21,7 +21,7 @@ lib_deps =
     https://github.com/valachbastl/AP_TaskUtils.git
 
 # Or pinned to version:
-    https://github.com/valachbastl/AP_TaskUtils.git#v2.3.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v2.4.0
 ```
 
 ## Quick Start
@@ -364,3 +364,7 @@ Defaults: `mode = PERIODIC`, `watchdog = true`, `waitBeforeStart = false` (EVENT
 ## Author
 
 Petr Adámek
+
+## License
+
+MIT — see [LICENSE](LICENSE).

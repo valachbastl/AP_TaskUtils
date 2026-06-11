@@ -7,7 +7,10 @@
 /* ========================================================================== */
 
 SemaphoreHandle_t                        AP_TaskUtils::_mutex      = nullptr;
-portMUX_TYPE                             AP_TaskUtils::_registryMux = portMUX_INITIALIZER_UNLOCKED;
+// Registry mutex se vytvori uz pri static-init (pred app_main/tasky) – zadny init call,
+// zadna zavislost na -fthreadsafe-statics. Mutex (ne spinlock) dovoluje alokaci
+// std::vector uvnitr zamku, takze registry/waiters zustavaji dynamicke.
+SemaphoreHandle_t                        AP_TaskUtils::_registryMutex = xSemaphoreCreateMutex();
 std::vector<AP_TaskUtils::RegistryEntry> AP_TaskUtils::_registry   = {};
 std::vector<AP_TaskUtils::WaiterEntry>   AP_TaskUtils::_waiters    = {};
 
@@ -68,40 +71,40 @@ AP_TaskUtils::AP_TaskUtils(const char *tag, Mode mode, bool watchdog, bool waitB
 
 void AP_TaskUtils::_registerTask()
 {
-    portENTER_CRITICAL(&_registryMux);
+    xSemaphoreTake(_registryMutex, portMAX_DELAY);
     for (const auto &e : _registry) {
         if (strcmp(e.name, _tag) == 0) {
-            portEXIT_CRITICAL(&_registryMux);
+            xSemaphoreGive(_registryMutex);
             ESP_LOGE(_tag, "Task '%s' is already registered — duplicate name!", _tag);
             return;
         }
     }
     _registry.push_back({_tag, _taskHandle, false});
-    portEXIT_CRITICAL(&_registryMux);
+    xSemaphoreGive(_registryMutex);
 }
 
 void AP_TaskUtils::_unregisterByHandle(TaskHandle_t handle)
 {
-    portENTER_CRITICAL(&_registryMux);
+    xSemaphoreTake(_registryMutex, portMAX_DELAY);
     _registry.erase(
         std::remove_if(_registry.begin(), _registry.end(),
             [handle](const RegistryEntry &e) { return e.handle == handle; }),
         _registry.end()
     );
-    portEXIT_CRITICAL(&_registryMux);
+    xSemaphoreGive(_registryMutex);
 }
 
 TaskHandle_t AP_TaskUtils::_findHandle(const char *name)
 {
-    portENTER_CRITICAL(&_registryMux);
+    xSemaphoreTake(_registryMutex, portMAX_DELAY);
     for (const auto &e : _registry) {
         if (strcmp(e.name, name) == 0) {
             TaskHandle_t h = e.handle;
-            portEXIT_CRITICAL(&_registryMux);
+            xSemaphoreGive(_registryMutex);
             return h;
         }
     }
-    portEXIT_CRITICAL(&_registryMux);
+    xSemaphoreGive(_registryMutex);
     return nullptr;
 }
 
@@ -114,12 +117,12 @@ void AP_TaskUtils::signalReady()
     if (_readySignaled) return;
     _readySignaled = true;
 
-    // Collect semaphores to give under lock, then give them outside lock
-    // to avoid holding the spinlock while calling FreeRTOS primitives
-    SemaphoreHandle_t toNotify[8];
-    int notifyCount = 0;
+    // Collect semaphores under the lock, give them after releasing it so we never
+    // hold the registry mutex while a woken higher-priority task runs. Dynamic vector
+    // → no fixed cap on the number of waiters.
+    std::vector<SemaphoreHandle_t> toNotify;
 
-    portENTER_CRITICAL(&_registryMux);
+    xSemaphoreTake(_registryMutex, portMAX_DELAY);
     for (auto &e : _registry) {
         if (e.handle == _taskHandle) {
             e.ready = true;
@@ -127,14 +130,14 @@ void AP_TaskUtils::signalReady()
         }
     }
     for (const auto &w : _waiters) {
-        if (strcmp(w.name, _tag) == 0 && notifyCount < 8) {
-            toNotify[notifyCount++] = w.sem;
+        if (strcmp(w.name, _tag) == 0) {
+            toNotify.push_back(w.sem);
         }
     }
-    portEXIT_CRITICAL(&_registryMux);
+    xSemaphoreGive(_registryMutex);
 
-    for (int i = 0; i < notifyCount; i++) {
-        xSemaphoreGive(toNotify[i]);
+    for (auto sem : toNotify) {
+        xSemaphoreGive(sem);
     }
 }
 
@@ -227,31 +230,36 @@ bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
     _lastRunTime = (uint32_t)(millis() - _cycleStart);
 
     // Fast path — already ready, no semaphore needed
-    portENTER_CRITICAL(&_registryMux);
+    xSemaphoreTake(_registryMutex, portMAX_DELAY);
     for (const auto &e : _registry) {
         if (strcmp(e.name, name) == 0 && e.ready) {
-            portEXIT_CRITICAL(&_registryMux);
+            xSemaphoreGive(_registryMutex);
             _cycleStart = millis();
             return true;
         }
     }
-    portEXIT_CRITICAL(&_registryMux);
+    xSemaphoreGive(_registryMutex);
 
-    // Create semaphore outside critical section, then register under lock
-    // Re-check ready after lock to close the window between the two critical sections
+    // Create semaphore outside the lock, then register under lock.
+    // Re-check ready after lock to close the window between the two sections.
     SemaphoreHandle_t sem = xSemaphoreCreateBinary();
+    if (sem == nullptr) {
+        ESP_LOGE("AP_TaskUtils", "waitReady('%s'): semaphore alloc failed", name);
+        _cycleStart = millis();
+        return false;
+    }
 
-    portENTER_CRITICAL(&_registryMux);
+    xSemaphoreTake(_registryMutex, portMAX_DELAY);
     for (const auto &e : _registry) {
         if (strcmp(e.name, name) == 0 && e.ready) {
-            portEXIT_CRITICAL(&_registryMux);
+            xSemaphoreGive(_registryMutex);
             vSemaphoreDelete(sem);
             _cycleStart = millis();
             return true;
         }
     }
     _waiters.push_back({name, sem});
-    portEXIT_CRITICAL(&_registryMux);
+    xSemaphoreGive(_registryMutex);
 
     if (_useWatchdog) esp_task_wdt_delete(nullptr);
 
@@ -260,13 +268,13 @@ bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
 
     if (_useWatchdog) esp_task_wdt_add(nullptr);
 
-    portENTER_CRITICAL(&_registryMux);
+    xSemaphoreTake(_registryMutex, portMAX_DELAY);
     _waiters.erase(
         std::remove_if(_waiters.begin(), _waiters.end(),
             [sem](const WaiterEntry &e) { return e.sem == sem; }),
         _waiters.end()
     );
-    portEXIT_CRITICAL(&_registryMux);
+    xSemaphoreGive(_registryMutex);
 
     vSemaphoreDelete(sem);
 
@@ -461,6 +469,7 @@ bool AP_TaskUtils::destroy(const char *name)
         ESP_LOGW("AP_TaskUtils", "destroy('%s'): task not found in registry", name);
         return false;
     }
+    esp_task_wdt_delete(h);   // odhlasit z TWDT (neskodne kdyz neni prihlasen) — jinak by po smazani tasku watchdog panicoval
     _unregisterByHandle(h);
     vTaskDelete(h);
     return true;

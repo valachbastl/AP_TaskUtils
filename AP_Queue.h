@@ -42,7 +42,7 @@ public:
      */
     bool send(const T &item)
     {
-        return xQueueSend(_queue, &item, portMAX_DELAY) == pdTRUE;
+        return _queue && xQueueSend(_queue, &item, portMAX_DELAY) == pdTRUE;
     }
 
     /**
@@ -53,7 +53,7 @@ public:
      */
     bool send(const T &item, uint32_t timeoutMs)
     {
-        return xQueueSend(_queue, &item, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+        return _queue && xQueueSend(_queue, &item, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
     }
 
     /**
@@ -62,6 +62,7 @@ public:
      */
     bool sendFromISR(const T &item)
     {
+        if (!_queue) return false;
         BaseType_t woken = pdFALSE;
         bool ok = xQueueSendFromISR(_queue, &item, &woken) == pdTRUE;
         portYIELD_FROM_ISR(woken);
@@ -74,7 +75,7 @@ public:
      */
     bool receive(T &item)
     {
-        return xQueueReceive(_queue, &item, portMAX_DELAY) == pdTRUE;
+        return _queue && xQueueReceive(_queue, &item, portMAX_DELAY) == pdTRUE;
     }
 
     /**
@@ -85,19 +86,19 @@ public:
      */
     bool receive(T &item, uint32_t timeoutMs)
     {
-        return xQueueReceive(_queue, &item, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+        return _queue && xQueueReceive(_queue, &item, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
     }
 
     /** @brief Returns number of items waiting in the queue */
     size_t available() const
     {
-        return (size_t)uxQueueMessagesWaiting(_queue);
+        return _queue ? (size_t)uxQueueMessagesWaiting(_queue) : 0;
     }
 
     /** @brief Flush the queue */
     void clear()
     {
-        xQueueReset(_queue);
+        if (_queue) xQueueReset(_queue);
     }
 
 private:

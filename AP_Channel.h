@@ -38,7 +38,7 @@ public:
      */
     void set(const T &value)
     {
-        xQueueOverwrite(_queue, &value);
+        if (_queue) xQueueOverwrite(_queue, &value);
     }
 
     /**
@@ -47,6 +47,7 @@ public:
      */
     void setFromISR(const T &value)
     {
+        if (!_queue) return;
         BaseType_t woken = pdFALSE;
         xQueueOverwriteFromISR(_queue, &value, &woken);
         portYIELD_FROM_ISR(woken);
@@ -59,7 +60,7 @@ public:
     T get() const
     {
         T value{};
-        xQueuePeek(_queue, &value, 0);
+        if (_queue) xQueuePeek(_queue, &value, 0);
         return value;
     }
 
@@ -68,6 +69,7 @@ public:
      */
     bool isSet() const
     {
+        if (!_queue) return false;
         T tmp{};
         return xQueuePeek(_queue, &tmp, 0) == pdTRUE;
     }
