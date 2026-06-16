@@ -21,7 +21,7 @@ lib_deps =
     https://github.com/valachbastl/AP_TaskUtils.git
 
 # Or pinned to version:
-    https://github.com/valachbastl/AP_TaskUtils.git#v2.4.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v2.4.1
 ```
 
 ## Quick Start
