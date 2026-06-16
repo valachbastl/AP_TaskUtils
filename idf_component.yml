@@ -1,0 +1,4 @@
+version: "2.4.1"
+description: "Utility library for FreeRTOS tasks in ESP-IDF (watchdog, mutex, timers, task registry, channels/queues)"
+dependencies:
+  idf: ">=5.0.0"
