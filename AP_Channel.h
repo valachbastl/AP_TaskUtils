@@ -1,7 +1,6 @@
 #pragma once
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
+#include "AP_QueueBase.h"
 
 /* ========================================================================== */
 /*  AP_Channel<T> — shared state (1 writer, N readers)                        */
@@ -16,21 +15,10 @@
 /* ========================================================================== */
 
 template<typename T>
-class AP_Channel
+class AP_Channel : private AP_QueueBase<T>
 {
 public:
-    AP_Channel()
-    {
-        _queue = xQueueCreate(1, sizeof(T));
-    }
-
-    ~AP_Channel()
-    {
-        if (_queue) vQueueDelete(_queue);
-    }
-
-    AP_Channel(const AP_Channel &) = delete;
-    AP_Channel &operator=(const AP_Channel &) = delete;
+    AP_Channel() : AP_QueueBase<T>(1) {}
 
     /**
      * @brief Write a new value (overwrites previous, never blocks)
@@ -38,7 +26,7 @@ public:
      */
     void set(const T &value)
     {
-        if (_queue) xQueueOverwrite(_queue, &value);
+        if (this->_queue) xQueueOverwrite(this->_queue, &value);
     }
 
     /**
@@ -47,9 +35,9 @@ public:
      */
     void setFromISR(const T &value)
     {
-        if (!_queue) return;
+        if (!this->_queue) return;
         BaseType_t woken = pdFALSE;
-        xQueueOverwriteFromISR(_queue, &value, &woken);
+        xQueueOverwriteFromISR(this->_queue, &value, &woken);
         portYIELD_FROM_ISR(woken);
     }
 
@@ -60,7 +48,7 @@ public:
     T get() const
     {
         T value{};
-        if (_queue) xQueuePeek(_queue, &value, 0);
+        if (this->_queue) xQueuePeek(this->_queue, &value, 0);
         return value;
     }
 
@@ -69,11 +57,8 @@ public:
      */
     bool isSet() const
     {
-        if (!_queue) return false;
+        if (!this->_queue) return false;
         T tmp{};
-        return xQueuePeek(_queue, &tmp, 0) == pdTRUE;
+        return xQueuePeek(this->_queue, &tmp, 0) == pdTRUE;
     }
-
-private:
-    QueueHandle_t _queue = nullptr;
 };

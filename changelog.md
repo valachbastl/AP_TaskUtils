@@ -1,5 +1,45 @@
 # Changelog
 
+## [2.5.0] - 2026-07-27
+
+Vyresene nalezy z plneho auditu 2026-07-08 (viz TODO_next_version.md). Beze
+zmeny verejneho API pro existujici volajici.
+
+### Fixed
+- `waitEvent()` a `waitReady()` nyni restartuji `_lastWakeTime` stejne jako
+  `sleep()` - PERIODIC task po dlouhem cekani v nich uz "nedohani" zameskane
+  cykly `vTaskDelayUntil` najednou.
+- 2-parametrovy konstruktor `(tag, mode)` clampuje `_intervalMs` na min. 1
+  (drive 0) - pri omylem pouzitem `DELAY` uz nemuze dojit k busy-spinu.
+- `signalReady()` davala `xSemaphoreGive()` na semafor cekatele AZ PO
+  uvolneni `_registryMutex` - pokud mezitim `waitReady()` s timeoutem vyprsel
+  a semafor smazal, slo o use-after-free. Give je nyni ve stejne kriticke
+  sekci jako scan `_waiters`.
+- Staticke `destroy(name)` nyni zrusi i instance vlastni `notifyAfter()`
+  timer (drive zustal zit po smazani tasku a po vystrelu volal
+  `xTaskNotifyGive()` na uvolneny/znovupouzity handle).
+- `waitReady()` uz nevisi navzdy (ani do timeoutu), kdyz je cekany task
+  smazan drive, nez stihne `signalReady()` - vraci `false`.
+- Opravena TOCTOU race v `notify(name)` / `suspend(name)` / `resume(name)` /
+  `destroy(name)`: mezi nalezenim handle v registru a jeho pouzitim mohl
+  cilovy task mezitim sam zavolat vlastni `destroy()` (self-delete) a operace
+  pak pracovala s uvolnenym/znovupouzitym handle. Kazdy registry zaznam ma
+  nyni pocitadlo probihajicich name-based operaci; self-destroy (i
+  `destroy(name)`) pockaji, az klesne na 0, nez handle skutecne zaniknou.
+
+### Changed
+- `_mutex` (globalni zamek pro `lock()`/`unlock()`) i `_registryMutex` jsou
+  nyni staticky alokovane (`xSemaphoreCreateMutexStatic` +
+  `StaticSemaphore_t`) a vytvoreji se rovnou pri static-init, stejne jako
+  drive jen `_registryMutex` - nemuze selhat kvuli OOM heapu a `initMutex()`
+  uz neni potreba volat. `initMutex()` zustava jako no-op kvuli zdrojove
+  kompatibilite se stavajicim kodem.
+- `wait()` a `waitBeforeStart()` sdileji spolecny mode-switch blok
+  (`_blockForMode()`) misto dvou kopii.
+- `AP_Channel<T>` a `AP_Queue<T>` sdileji spolecnou internal bazi
+  (`AP_QueueBase<T>`) pro `_queue` handle, konstrukci/destrukci a zakaz
+  kopirovani - drive duplicitni v obou souborech.
+
 ## [2.4.1] - 2026-06-16
 
 ### Added

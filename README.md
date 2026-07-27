@@ -21,7 +21,7 @@ lib_deps =
     https://github.com/valachbastl/AP_TaskUtils.git
 
 # Or pinned to version:
-    https://github.com/valachbastl/AP_TaskUtils.git#v2.4.1
+    https://github.com/valachbastl/AP_TaskUtils.git#v2.5.0
 ```
 
 ## Quick Start
@@ -34,7 +34,7 @@ lib_deps =
 extern "C" void app_main(void)
 {
     AP_TaskUtils::initWatchdog(5000);  // 5s timeout, panic on timeout
-    AP_TaskUtils::initMutex();         // only if using lock()/unlock()
+    // AP_TaskUtils::initMutex();      // no-op since v2.5.0 (mutex auto-initializes) — kept for source compatibility
 
     sensor_task_create();
     mqtt_task_create();
@@ -335,7 +335,7 @@ Defaults: `mode = PERIODIC`, `watchdog = true`, `waitBeforeStart = false` (EVENT
 | `micros()` | Time since boot in µs |
 | `delayMs(ms)` | Blocking delay in ms (no watchdog reset) |
 | `delayUs(us)` | Blocking delay in µs (no watchdog reset) |
-| `initMutex()` | Initialize global mutex — call in app_main |
+| `initMutex()` | No-op since v2.5.0 (mutex auto-initializes) — kept for source compatibility |
 | `lock()` | Lock global mutex (blocks until available) |
 | `lock(timeoutMs)` | Lock with timeout |
 | `unlock()` | Unlock global mutex |

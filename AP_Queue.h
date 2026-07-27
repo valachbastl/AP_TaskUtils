@@ -1,7 +1,6 @@
 #pragma once
 
-#include "freertos/FreeRTOS.h"
-#include "freertos/queue.h"
+#include "AP_QueueBase.h"
 
 /* ========================================================================== */
 /*  AP_Queue<T> — event stream (N writers, 1 reader)                          */
@@ -16,25 +15,14 @@
 /* ========================================================================== */
 
 template<typename T>
-class AP_Queue
+class AP_Queue : private AP_QueueBase<T>
 {
 public:
     /**
      * @brief Constructor
      * @param capacity Maximum number of items in the queue
      */
-    explicit AP_Queue(size_t capacity)
-    {
-        _queue = xQueueCreate(capacity, sizeof(T));
-    }
-
-    ~AP_Queue()
-    {
-        if (_queue) vQueueDelete(_queue);
-    }
-
-    AP_Queue(const AP_Queue &) = delete;
-    AP_Queue &operator=(const AP_Queue &) = delete;
+    explicit AP_Queue(size_t capacity) : AP_QueueBase<T>(capacity) {}
 
     /**
      * @brief Send an item (blocking — waits until space is available)
@@ -42,7 +30,7 @@ public:
      */
     bool send(const T &item)
     {
-        return _queue && xQueueSend(_queue, &item, portMAX_DELAY) == pdTRUE;
+        return this->_queue && xQueueSend(this->_queue, &item, portMAX_DELAY) == pdTRUE;
     }
 
     /**
@@ -53,7 +41,7 @@ public:
      */
     bool send(const T &item, uint32_t timeoutMs)
     {
-        return _queue && xQueueSend(_queue, &item, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+        return this->_queue && xQueueSend(this->_queue, &item, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
     }
 
     /**
@@ -62,9 +50,9 @@ public:
      */
     bool sendFromISR(const T &item)
     {
-        if (!_queue) return false;
+        if (!this->_queue) return false;
         BaseType_t woken = pdFALSE;
-        bool ok = xQueueSendFromISR(_queue, &item, &woken) == pdTRUE;
+        bool ok = xQueueSendFromISR(this->_queue, &item, &woken) == pdTRUE;
         portYIELD_FROM_ISR(woken);
         return ok;
     }
@@ -75,7 +63,7 @@ public:
      */
     bool receive(T &item)
     {
-        return _queue && xQueueReceive(_queue, &item, portMAX_DELAY) == pdTRUE;
+        return this->_queue && xQueueReceive(this->_queue, &item, portMAX_DELAY) == pdTRUE;
     }
 
     /**
@@ -86,21 +74,18 @@ public:
      */
     bool receive(T &item, uint32_t timeoutMs)
     {
-        return _queue && xQueueReceive(_queue, &item, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
+        return this->_queue && xQueueReceive(this->_queue, &item, pdMS_TO_TICKS(timeoutMs)) == pdTRUE;
     }
 
     /** @brief Returns number of items waiting in the queue */
     size_t available() const
     {
-        return _queue ? (size_t)uxQueueMessagesWaiting(_queue) : 0;
+        return this->_queue ? (size_t)uxQueueMessagesWaiting(this->_queue) : 0;
     }
 
     /** @brief Flush the queue */
     void clear()
     {
-        if (_queue) xQueueReset(_queue);
+        if (this->_queue) xQueueReset(this->_queue);
     }
-
-private:
-    QueueHandle_t _queue = nullptr;
 };

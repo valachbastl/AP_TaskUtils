@@ -6,11 +6,14 @@
 /*  Static variables                                                           */
 /* ========================================================================== */
 
-SemaphoreHandle_t                        AP_TaskUtils::_mutex      = nullptr;
-// Registry mutex se vytvori uz pri static-init (pred app_main/tasky) – zadny init call,
-// zadna zavislost na -fthreadsafe-statics. Mutex (ne spinlock) dovoluje alokaci
-// std::vector uvnitr zamku, takze registry/waiters zustavaji dynamicke.
-SemaphoreHandle_t                        AP_TaskUtils::_registryMutex = xSemaphoreCreateMutex();
+// Both mutexes are created at static-init time (before app_main/tasks) – no init
+// call, no dependency on -fthreadsafe-statics. Mutex (not spinlock) allows allocating
+// std::vector inside the lock, so registry/waiters stay dynamic. Static allocation
+// (StaticSemaphore_t instead of heap) can't fail due to OOM.
+StaticSemaphore_t                        AP_TaskUtils::_mutexBuffer;
+SemaphoreHandle_t                        AP_TaskUtils::_mutex = xSemaphoreCreateMutexStatic(&AP_TaskUtils::_mutexBuffer);
+StaticSemaphore_t                        AP_TaskUtils::_registryMutexBuffer;
+SemaphoreHandle_t                        AP_TaskUtils::_registryMutex = xSemaphoreCreateMutexStatic(&AP_TaskUtils::_registryMutexBuffer);
 std::vector<AP_TaskUtils::RegistryEntry> AP_TaskUtils::_registry   = {};
 std::vector<AP_TaskUtils::WaiterEntry>   AP_TaskUtils::_waiters    = {};
 
@@ -42,7 +45,7 @@ AP_TaskUtils::AP_TaskUtils(const char *tag, uint32_t intervalMs, Mode mode,
 
 AP_TaskUtils::AP_TaskUtils(const char *tag, Mode mode, bool watchdog, bool waitBeforeStart)
     : _tag(tag),
-      _intervalMs(0),
+      _intervalMs(1),  // clamp to min. 1 — prevents busy-spin if misused with DELAY; EVENT ignores it anyway
       _mode(mode),
       _useWatchdog(watchdog),
       _initialWaitDone(false),
@@ -79,26 +82,22 @@ void AP_TaskUtils::_registerTask()
             return;
         }
     }
-    _registry.push_back({_tag, _taskHandle, false});
+    _registry.push_back({_tag, _taskHandle, false, this, 0, false, nullptr});
     xSemaphoreGive(_registryMutex);
 }
 
-void AP_TaskUtils::_unregisterByHandle(TaskHandle_t handle)
+TaskHandle_t AP_TaskUtils::_pinHandle(const char *name)
 {
     xSemaphoreTake(_registryMutex, portMAX_DELAY);
-    _registry.erase(
-        std::remove_if(_registry.begin(), _registry.end(),
-            [handle](const RegistryEntry &e) { return e.handle == handle; }),
-        _registry.end()
-    );
-    xSemaphoreGive(_registryMutex);
-}
-
-TaskHandle_t AP_TaskUtils::_findHandle(const char *name)
-{
-    xSemaphoreTake(_registryMutex, portMAX_DELAY);
-    for (const auto &e : _registry) {
+    for (auto &e : _registry) {
         if (strcmp(e.name, name) == 0) {
+            if (e.removing) {
+                // Removal already committed (see _removeFromRegistry) — treat as gone
+                // rather than racing it.
+                xSemaphoreGive(_registryMutex);
+                return nullptr;
+            }
+            e.busyCount++;
             TaskHandle_t h = e.handle;
             xSemaphoreGive(_registryMutex);
             return h;
@@ -106,6 +105,89 @@ TaskHandle_t AP_TaskUtils::_findHandle(const char *name)
     }
     xSemaphoreGive(_registryMutex);
     return nullptr;
+}
+
+void AP_TaskUtils::_unpinHandle(const char *name)
+{
+    xSemaphoreTake(_registryMutex, portMAX_DELAY);
+    for (auto &e : _registry) {
+        if (strcmp(e.name, name) == 0) {
+            e.busyCount--;
+            if (e.removing && e.busyCount == 0 && e.drainSem) {
+                xSemaphoreGive(e.drainSem);
+            }
+            break;
+        }
+    }
+    xSemaphoreGive(_registryMutex);
+}
+
+TaskHandle_t AP_TaskUtils::_removeFromRegistry(const char *name)
+{
+    auto findIdx = [name]() -> int {
+        for (size_t i = 0; i < _registry.size(); ++i) {
+            if (strcmp(_registry[i].name, name) == 0) return (int)i;
+        }
+        return -1;
+    };
+
+    xSemaphoreTake(_registryMutex, portMAX_DELAY);
+
+    int idx = findIdx();
+    if (idx < 0 || _registry[idx].removing) {
+        // Not found, or a concurrent destroy()/destroy(name) already claimed removal
+        // (caller-side double-destroy) — treat as already gone rather than racing it.
+        xSemaphoreGive(_registryMutex);
+        return nullptr;
+    }
+
+    _registry[idx].removing = true;
+    TaskHandle_t h = _registry[idx].handle;
+
+    while (_registry[idx].busyCount > 0) {
+        // notify(name)/suspend(name)/resume(name) still in flight on this handle —
+        // wait for it to finish before the handle can be safely deleted/reused.
+        // Lazily created: only hit under real concurrency.
+        if (!_registry[idx].drainSem) _registry[idx].drainSem = xSemaphoreCreateBinary();
+        SemaphoreHandle_t drain = _registry[idx].drainSem;
+        xSemaphoreGive(_registryMutex);
+
+        if (drain) {
+            xSemaphoreTake(drain, portMAX_DELAY);
+        } else {
+            // OOM fallback — couldn't allocate the drain semaphore, poll instead of
+            // blocking on a null handle (which would be undefined behavior).
+            ESP_LOGW("AP_TaskUtils", "_removeFromRegistry('%s'): drain semaphore alloc failed, polling", name);
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+
+        xSemaphoreTake(_registryMutex, portMAX_DELAY);
+        idx = findIdx();  // vector may have reallocated while unlocked; removing==true
+                           // guarantees the entry itself is still present
+    }
+
+    // Safe now — no in-flight name-based op holds this handle. Cancel the owning
+    // instance's notifyAfter() timer and wake any waitReady() callers blocked on
+    // this name in the SAME critical section, so a concurrent signalReady() can
+    // never race the erase (give-then-delete vs. delete-then-give).
+    RegistryEntry &e = _registry[idx];
+    if (e.self && e.self->_oneShot) {
+        esp_timer_stop(e.self->_oneShot);
+        esp_timer_delete(e.self->_oneShot);
+        e.self->_oneShot = nullptr;
+    }
+    if (e.drainSem) vSemaphoreDelete(e.drainSem);
+
+    for (const auto &w : _waiters) {
+        if (strcmp(w.name, name) == 0) {
+            if (w.targetDestroyed) *w.targetDestroyed = true;
+            xSemaphoreGive(w.sem);
+        }
+    }
+
+    _registry.erase(_registry.begin() + idx);
+    xSemaphoreGive(_registryMutex);
+    return h;
 }
 
 /* ========================================================================== */
@@ -117,11 +199,10 @@ void AP_TaskUtils::signalReady()
     if (_readySignaled) return;
     _readySignaled = true;
 
-    // Collect semaphores under the lock, give them after releasing it so we never
-    // hold the registry mutex while a woken higher-priority task runs. Dynamic vector
-    // → no fixed cap on the number of waiters.
-    std::vector<SemaphoreHandle_t> toNotify;
-
+    // Scan and give under the same lock — giving after releasing the lock would let
+    // a waitReady() timeout race in between (delete its semaphore before this give),
+    // producing a use-after-free. xSemaphoreGive is O(1) and never blocks, so holding
+    // the lock a little longer here is fine.
     xSemaphoreTake(_registryMutex, portMAX_DELAY);
     for (auto &e : _registry) {
         if (e.handle == _taskHandle) {
@@ -131,24 +212,14 @@ void AP_TaskUtils::signalReady()
     }
     for (const auto &w : _waiters) {
         if (strcmp(w.name, _tag) == 0) {
-            toNotify.push_back(w.sem);
+            xSemaphoreGive(w.sem);
         }
     }
     xSemaphoreGive(_registryMutex);
-
-    for (auto sem : toNotify) {
-        xSemaphoreGive(sem);
-    }
 }
 
-void AP_TaskUtils::wait()
+void AP_TaskUtils::_blockForMode()
 {
-    signalReady();
-
-    _lastRunTime = (uint32_t)(millis() - _cycleStart);
-
-    if (_useWatchdog) esp_task_wdt_delete(nullptr);
-
     switch (_mode) {
         case PERIODIC:
             vTaskDelayUntil(&_lastWakeTime, pdMS_TO_TICKS(_intervalMs));
@@ -160,6 +231,17 @@ void AP_TaskUtils::wait()
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             break;
     }
+}
+
+void AP_TaskUtils::wait()
+{
+    signalReady();
+
+    _lastRunTime = (uint32_t)(millis() - _cycleStart);
+
+    if (_useWatchdog) esp_task_wdt_delete(nullptr);
+
+    _blockForMode();
 
     if (_useWatchdog) esp_task_wdt_add(nullptr);
 
@@ -220,6 +302,10 @@ void AP_TaskUtils::waitEvent(EventGroupHandle_t group, EventBits_t bits)
     xEventGroupWaitBits(group, bits, pdFALSE, pdTRUE, portMAX_DELAY);
     if (_useWatchdog) esp_task_wdt_add(nullptr);
 
+    // Restart the PERIODIC base time, same as sleep() — otherwise vTaskDelayUntil()
+    // would "catch up" all cycles missed while blocked here in the next wait().
+    if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
+
     _cycleStart = millis();
 }
 
@@ -234,6 +320,7 @@ bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
     for (const auto &e : _registry) {
         if (strcmp(e.name, name) == 0 && e.ready) {
             xSemaphoreGive(_registryMutex);
+            if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
             _cycleStart = millis();
             return true;
         }
@@ -249,16 +336,22 @@ bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
         return false;
     }
 
+    // Target-destroyed flag — lives on this stack frame, referenced by the
+    // WaiterEntry so _removeFromRegistry() can tell us the task will never
+    // become ready instead of silently giving the semaphore as if it had.
+    volatile bool targetDestroyed = false;
+
     xSemaphoreTake(_registryMutex, portMAX_DELAY);
     for (const auto &e : _registry) {
         if (strcmp(e.name, name) == 0 && e.ready) {
             xSemaphoreGive(_registryMutex);
             vSemaphoreDelete(sem);
+            if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
             _cycleStart = millis();
             return true;
         }
     }
-    _waiters.push_back({name, sem});
+    _waiters.push_back({name, sem, &targetDestroyed});
     xSemaphoreGive(_registryMutex);
 
     if (_useWatchdog) esp_task_wdt_delete(nullptr);
@@ -278,8 +371,13 @@ bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
 
     vSemaphoreDelete(sem);
 
+    if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
     _cycleStart = millis();
 
+    if (ok && targetDestroyed) {
+        ESP_LOGW("AP_TaskUtils", "waitReady('%s'): target task was destroyed before becoming ready", name);
+        return false;
+    }
     if (!ok) ESP_LOGW("AP_TaskUtils", "waitReady('%s'): timeout", name);
     return ok;
 }
@@ -295,17 +393,7 @@ void AP_TaskUtils::waitBeforeStart()
 
     if (_useWatchdog) esp_task_wdt_delete(nullptr);
 
-    switch (_mode) {
-        case PERIODIC:
-            vTaskDelayUntil(&_lastWakeTime, pdMS_TO_TICKS(_intervalMs));
-            break;
-        case DELAY:
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(_intervalMs));
-            break;
-        case EVENT:
-            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-            break;
-    }
+    _blockForMode();
 
     if (_useWatchdog) esp_task_wdt_add(nullptr);
 
@@ -320,13 +408,12 @@ void AP_TaskUtils::notify()
 
 void AP_TaskUtils::destroy()
 {
-    if (_oneShot) {
-        esp_timer_stop(_oneShot);
-        esp_timer_delete(_oneShot);
-        _oneShot = nullptr;
-    }
     disableWatchdog();
-    _unregisterByHandle(_taskHandle);
+    // Waits out any in-flight notify(name)/suspend(name)/resume(name) on our own
+    // name, cancels our notifyAfter() timer, wakes waitReady() waiters, and removes
+    // us from the registry — all before vTaskDelete(nullptr) makes our handle
+    // invalid/reusable.
+    _removeFromRegistry(_tag);
     vTaskDelete(nullptr);
 }
 
@@ -427,12 +514,13 @@ bool AP_TaskUtils::timer(int index)
 
 bool AP_TaskUtils::notify(const char *name)
 {
-    TaskHandle_t h = _findHandle(name);
+    TaskHandle_t h = _pinHandle(name);
     if (!h) {
         ESP_LOGW("AP_TaskUtils", "notify('%s'): task not found in registry", name);
         return false;
     }
     xTaskNotifyGive(h);
+    _unpinHandle(name);
     return true;
 }
 
@@ -464,36 +552,41 @@ void AP_TaskUtils::notifyAfter(const char *name, uint32_t ms)
 
 bool AP_TaskUtils::destroy(const char *name)
 {
-    TaskHandle_t h = _findHandle(name);
+    // _removeFromRegistry waits out any in-flight notify/suspend/resume(name) and
+    // any concurrent self-destroy() before handing back the handle, so it's still
+    // guaranteed valid here — closes the TOCTOU window that used to exist between
+    // finding the handle and deleting it.
+    TaskHandle_t h = _removeFromRegistry(name);
     if (!h) {
         ESP_LOGW("AP_TaskUtils", "destroy('%s'): task not found in registry", name);
         return false;
     }
-    esp_task_wdt_delete(h);   // odhlasit z TWDT (neskodne kdyz neni prihlasen) — jinak by po smazani tasku watchdog panicoval
-    _unregisterByHandle(h);
+    esp_task_wdt_delete(h);   // unregister from TWDT (harmless if not registered) — otherwise the watchdog would panic after the task is deleted
     vTaskDelete(h);
     return true;
 }
 
 bool AP_TaskUtils::suspend(const char *name)
 {
-    TaskHandle_t h = _findHandle(name);
+    TaskHandle_t h = _pinHandle(name);
     if (!h) {
         ESP_LOGW("AP_TaskUtils", "suspend('%s'): task not found in registry", name);
         return false;
     }
     vTaskSuspend(h);
+    _unpinHandle(name);
     return true;
 }
 
 bool AP_TaskUtils::resume(const char *name)
 {
-    TaskHandle_t h = _findHandle(name);
+    TaskHandle_t h = _pinHandle(name);
     if (!h) {
         ESP_LOGW("AP_TaskUtils", "resume('%s'): task not found in registry", name);
         return false;
     }
     vTaskResume(h);
+    _unpinHandle(name);
     return true;
 }
 
@@ -547,8 +640,9 @@ void AP_TaskUtils::delayUs(uint32_t us)
 
 void AP_TaskUtils::initMutex()
 {
-    _mutex = xSemaphoreCreateMutex();
-    ESP_LOGI("AP_TaskUtils", "Mutex initialized");
+    // No-op since v2.5.0 — _mutex is now created at static-init time, same as
+    // _registryMutex, so it can never be null. Kept for source compatibility with
+    // existing calls.
 }
 
 bool AP_TaskUtils::lock()

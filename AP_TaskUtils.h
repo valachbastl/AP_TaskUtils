@@ -83,31 +83,31 @@ public:
     void wait();
 
     /**
-     * @brief Zablokuje task až do příchodu notify() — bez timeoutu, bez ohledu na mód.
-     *        Funguje kdekoliv v těle tasku (před smyčkou i uvnitř while(1)).
-     *        Watchdog se chová stejně jako v wait() — task je dočasně odhlášen.
-     *        Po probuzení se PERIODIC timer resetuje, takže wait() pokračuje správně.
+     * @brief Blocks the task until notify() arrives — no timeout, regardless of mode.
+     *        Works anywhere in the task body (before the loop or inside while(1)).
+     *        Watchdog is handled the same way as in wait() — temporarily unregistered.
+     *        On wakeup the PERIODIC timer is reset, so wait() continues correctly.
      *
-     *        Typické použití — čekání na síťovou událost před prvním cyklem:
-     *          task.sleep();       // spí dokud ethernet_init nezavolá notify()
+     *        Typical usage — wait for a network event before the first cycle:
+     *          task.sleep();       // sleeps until ethernet_init calls notify()
      *          mqtt_init();
      *          while (1) {
      *              publish();
-     *              task.wait();    // normální DELAY interval nebo notify
+     *              task.wait();    // normal DELAY interval or notify
      *          }
      */
     void sleep();
 
     /**
-     * @brief Uspí tento task na ms milisekund — watchdog-safe, lze probudit dříve přes notify().
-     *        Naplánuje one-shot timer který probudí tento task, pak zavolá sleep().
+     * @brief Sleeps this task for ms milliseconds — watchdog-safe, can be woken early via notify().
+     *        Schedules a one-shot timer that wakes this task, then calls sleep().
      *
-     *        Typické použití — stabilizace sítě před prvním requestem:
+     *        Typical usage — network stabilization before the first request:
      *          task.waitEvent(netEventGroup, NET_GOT_IP_BIT);
-     *          task.notifyAfter(5000);  // čeká 5s, watchdog-safe
+     *          task.notifyAfter(5000);  // waits 5s, watchdog-safe
      *          ota.check();
      *
-     * @param ms Čas čekání v milisekundách
+     * @param ms Wait time in milliseconds
      */
     void notifyAfter(uint32_t ms);
 
@@ -306,7 +306,11 @@ public:
     //  Static — global mutex
     // -------------------------------------------------------------------------
 
-    /** @brief Initialize global mutex — call in app_main before tasks */
+    /**
+     * @brief No-op since v2.5.0 — the global mutex is now auto-initialized at
+     *        static-init time, same as the internal registry mutex. Kept only for
+     *        source compatibility with existing calls; no longer needs to be called.
+     */
     static void initMutex();
 
     /**
@@ -333,14 +337,19 @@ private:
     };
 
     struct RegistryEntry {
-        const char  *name;
-        TaskHandle_t handle;
-        bool         ready;
+        const char       *name;
+        TaskHandle_t      handle;
+        bool              ready;
+        AP_TaskUtils     *self;      // owning instance — lets removal cancel its notifyAfter() timer
+        int               busyCount; // in-flight notify/suspend/resume/destroy(name) ops pinning this handle
+        bool              removing;  // true once removal has begun — blocks new pins (see _pinHandle)
+        SemaphoreHandle_t drainSem;  // signaled when busyCount reaches 0 while removing
     };
 
     struct WaiterEntry {
         const char       *name;
         SemaphoreHandle_t sem;
+        volatile bool    *targetDestroyed; // set true if the awaited task is destroyed before becoming ready
     };
 
     const char  *_tag;
@@ -358,12 +367,25 @@ private:
     std::vector<TimerEntry> _timers;
 
     static SemaphoreHandle_t           _mutex;
-    static SemaphoreHandle_t           _registryMutex;  // chrani _registry + _waiters (mutex, ne spinlock → lze alokovat uvnitr zamku)
+    static StaticSemaphore_t           _mutexBuffer;
+    static SemaphoreHandle_t           _registryMutex;  // protects _registry + _waiters (mutex, not spinlock → safe to allocate inside the lock)
+    static StaticSemaphore_t           _registryMutexBuffer;
     static std::vector<RegistryEntry>  _registry;
     static std::vector<WaiterEntry>    _waiters;
 
     void                _registerTask();
-    static void         _unregisterByHandle(TaskHandle_t handle);
-    static TaskHandle_t _findHandle(const char *name);
+    void                _blockForMode();
+
+    // Pin/unpin: used by notify(name)/suspend(name)/resume(name) to hold a handle
+    // stable against a concurrent self-destroy() while the FreeRTOS call is in flight.
+    static TaskHandle_t _pinHandle(const char *name);
+    static void         _unpinHandle(const char *name);
+
+    // Used by destroy() (self) and destroy(name) — waits out any in-flight pins,
+    // then atomically cancels the owning instance's notifyAfter() timer, wakes
+    // waitReady() waiters, and erases the entry. Returns the handle, or nullptr if
+    // not found / already being removed by a concurrent call.
+    static TaskHandle_t _removeFromRegistry(const char *name);
+
     const char         *_modeStr() const;
 };
