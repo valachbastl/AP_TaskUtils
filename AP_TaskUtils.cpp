@@ -30,7 +30,7 @@ AP_TaskUtils::AP_TaskUtils(const char *tag, uint32_t intervalMs, Mode mode,
       _initialWaitDone(false),
       _readySignaled(false),
       _taskHandle(xTaskGetCurrentTaskHandle()),
-      _lastWakeTime(xTaskGetTickCount()),
+      _lastWakeTimeUs(esp_timer_get_time()),
       _cycleStart(millis()),
       _lastRunTime(0)
 {
@@ -51,7 +51,7 @@ AP_TaskUtils::AP_TaskUtils(const char *tag, Mode mode, bool watchdog, bool waitB
       _initialWaitDone(false),
       _readySignaled(false),
       _taskHandle(xTaskGetCurrentTaskHandle()),
-      _lastWakeTime(xTaskGetTickCount()),
+      _lastWakeTimeUs(esp_timer_get_time()),
       _cycleStart(millis()),
       _lastRunTime(0)
 {
@@ -82,7 +82,15 @@ void AP_TaskUtils::_registerTask()
             return;
         }
     }
-    _registry.push_back({_tag, _taskHandle, false, this, 0, false, nullptr});
+    RegistryEntry entry;
+    entry.name      = _tag;
+    entry.handle    = _taskHandle;
+    entry.ready     = false;
+    entry.self      = this;
+    entry.busyCount = 0;
+    entry.removing  = false;
+    entry.drainSem  = nullptr;
+    _registry.push_back(entry);
     xSemaphoreGive(_registryMutex);
 }
 
@@ -218,14 +226,85 @@ void AP_TaskUtils::signalReady()
     xSemaphoreGive(_registryMutex);
 }
 
+// Caller must hold a self-pin (_pinHandle(_tag) ... _unpinHandle(_tag)) before
+// calling — see _waitForTimer()/notifyAfter(). Not safe to call unprotected: a
+// concurrent destroy(name)/destroy() targeting us deletes _oneShot under the same
+// pin/drain mechanism that already guards notify/suspend/resume(name).
+void AP_TaskUtils::_ensureOneShot()
+{
+    if (_oneShot) return;
+
+    esp_timer_create_args_t args = {};
+    args.callback = [](void *arg) {
+        AP_TaskUtils *self = static_cast<AP_TaskUtils *>(arg);
+        self->_timerFired = true;
+        xTaskNotifyGive(self->_taskHandle);
+    };
+    args.arg  = this;
+    args.name = "AP_TaskUtils";
+    if (esp_timer_create(&args, &_oneShot) != ESP_OK) {
+        ESP_LOGW(_tag, "esp_timer_create failed — falling back to tick-based wait for this cycle");
+        _oneShot = nullptr;
+    }
+}
+
+// Arms _oneShot for durationUs and blocks until it fires (or, for DELAY, until any
+// external notify() arrives).
+void AP_TaskUtils::_waitForTimer(int64_t durationUs, bool ignoreExternalNotify)
+{
+    if (durationUs < 0) durationUs = 0;
+
+    // Pin our own registry entry while touching _oneShot — the same busyCount/
+    // drain mechanism _removeFromRegistry() already uses for notify/suspend/
+    // resume(name) now also blocks a concurrent destroy(name)/destroy() from
+    // deleting _oneShot out from under this create-and-arm sequence. Released
+    // before the blocking wait below, so destroy(name) never has to wait out a
+    // full interval — only this short arm sequence.
+    bool armed = false;
+    if (_pinHandle(_tag)) {
+        _ensureOneShot();
+        if (_oneShot) {
+            _timerFired = false;
+            esp_timer_stop(_oneShot);
+            esp_timer_start_once(_oneShot, (uint64_t)durationUs);
+            armed = true;
+        }
+        _unpinHandle(_tag);
+    }
+
+    if (!armed) {
+        // No usable timer — esp_timer_create() failed (OOM), or a concurrent
+        // destroy() has already claimed removal of this task. Degrade to a
+        // tick-based wait rather than blocking forever; still subject to
+        // tick-rate drift, but only in these two rare fallback cases.
+        vTaskDelay(pdMS_TO_TICKS((uint32_t)(durationUs / 1000)));
+        return;
+    }
+
+    do {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    } while (ignoreExternalNotify && !_timerFired);
+}
+
 void AP_TaskUtils::_blockForMode()
 {
     switch (_mode) {
-        case PERIODIC:
-            vTaskDelayUntil(&_lastWakeTime, pdMS_TO_TICKS(_intervalMs));
+        case PERIODIC: {
+            // Same catch-up semantics as vTaskDelayUntil: always advance the
+            // reference by exactly one interval, then block only if that's still
+            // in the future. If we're already behind, return immediately instead
+            // of bursting through multiple missed periods. notify() is ignored
+            // here — matches the old vTaskDelayUntil, which task notifications
+            // never interrupted.
+            int64_t nowUs = esp_timer_get_time();
+            _lastWakeTimeUs += (int64_t)_intervalMs * 1000;
+            if (_lastWakeTimeUs > nowUs) {
+                _waitForTimer(_lastWakeTimeUs - nowUs, /*ignoreExternalNotify=*/true);
+            }
             break;
+        }
         case DELAY:
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(_intervalMs));
+            _waitForTimer((int64_t)_intervalMs * 1000, /*ignoreExternalNotify=*/false);
             break;
         case EVENT:
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
@@ -258,7 +337,7 @@ void AP_TaskUtils::sleep()
 
     ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-    if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
+    if (_mode == PERIODIC) _lastWakeTimeUs = esp_timer_get_time();
 
     if (_useWatchdog) esp_task_wdt_add(nullptr);
 
@@ -268,28 +347,36 @@ void AP_TaskUtils::sleep()
 void AP_TaskUtils::notifyAfter(uint32_t ms)
 {
     // Reusable one-shot timer — created once, restarted on each call. No leak.
-    if (!_oneShot) {
-        esp_timer_create_args_t args = {};
-        args.callback = [](void *arg) { xTaskNotifyGive((TaskHandle_t)arg); };
-        args.arg      = (void *)_taskHandle;
-        args.name     = "AP_notifyAfter";
-        if (esp_timer_create(&args, &_oneShot) != ESP_OK) {
-            ESP_LOGW(_tag, "notifyAfter: timer create failed");
-            sleep();  // fallback — wait for external notify() only
-            return;
+    // Pinned the same way as _waitForTimer(): protects _oneShot from a concurrent
+    // destroy(name)/destroy() targeting us, released before the blocking sleep()
+    // below so destroy(name) isn't held up for the full delay.
+    bool armed = false;
+    if (_pinHandle(_tag)) {
+        _ensureOneShot();
+        if (_oneShot) {
+            // esp_timer_stop first is harmless if already stopped.
+            esp_timer_stop(_oneShot);
+            esp_timer_start_once(_oneShot, (uint64_t)ms * 1000ULL);
+            armed = true;
         }
+        _unpinHandle(_tag);
     }
 
-    // Arm the timer (esp_timer_stop first is harmless if already stopped).
-    esp_timer_stop(_oneShot);
-    esp_timer_start_once(_oneShot, (uint64_t)ms * 1000ULL);
+    if (!armed) {
+        sleep();  // fallback — wait for external notify() only
+        return;
+    }
 
     // Block — woken by the timer or an earlier external notify()
     sleep();
 
-    // Cancel the timer if we were woken externally before it fired,
-    // so no stale notification lingers for the next wait()/sleep().
-    esp_timer_stop(_oneShot);
+    // Cancel the timer if we were woken externally before it fired, so no stale
+    // notification lingers for the next wait()/sleep(). Pinned again — destroy()
+    // may have deleted _oneShot while we were blocked in sleep().
+    if (_pinHandle(_tag)) {
+        if (_oneShot) esp_timer_stop(_oneShot);
+        _unpinHandle(_tag);
+    }
 }
 
 void AP_TaskUtils::waitEvent(EventGroupHandle_t group, EventBits_t bits)
@@ -302,9 +389,9 @@ void AP_TaskUtils::waitEvent(EventGroupHandle_t group, EventBits_t bits)
     xEventGroupWaitBits(group, bits, pdFALSE, pdTRUE, portMAX_DELAY);
     if (_useWatchdog) esp_task_wdt_add(nullptr);
 
-    // Restart the PERIODIC base time, same as sleep() — otherwise vTaskDelayUntil()
-    // would "catch up" all cycles missed while blocked here in the next wait().
-    if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
+    // Restart the PERIODIC base time, same as sleep() — otherwise the next wait()
+    // would "catch up" all cycles missed while blocked here.
+    if (_mode == PERIODIC) _lastWakeTimeUs = esp_timer_get_time();
 
     _cycleStart = millis();
 }
@@ -320,7 +407,7 @@ bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
     for (const auto &e : _registry) {
         if (strcmp(e.name, name) == 0 && e.ready) {
             xSemaphoreGive(_registryMutex);
-            if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
+            if (_mode == PERIODIC) _lastWakeTimeUs = esp_timer_get_time();
             _cycleStart = millis();
             return true;
         }
@@ -346,7 +433,7 @@ bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
         if (strcmp(e.name, name) == 0 && e.ready) {
             xSemaphoreGive(_registryMutex);
             vSemaphoreDelete(sem);
-            if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
+            if (_mode == PERIODIC) _lastWakeTimeUs = esp_timer_get_time();
             _cycleStart = millis();
             return true;
         }
@@ -371,7 +458,7 @@ bool AP_TaskUtils::waitReady(const char *name, uint32_t timeoutMs)
 
     vSemaphoreDelete(sem);
 
-    if (_mode == PERIODIC) _lastWakeTime = xTaskGetTickCount();
+    if (_mode == PERIODIC) _lastWakeTimeUs = esp_timer_get_time();
     _cycleStart = millis();
 
     if (ok && targetDestroyed) {
@@ -543,7 +630,11 @@ void AP_TaskUtils::notifyAfter(const char *name, uint32_t ms)
     args.name = "AP_notifyAfter";
 
     if (esp_timer_create(&args, &ctx->timer) == ESP_OK) {
-        esp_timer_start_once(ctx->timer, (uint64_t)ms * 1000ULL);
+        if (esp_timer_start_once(ctx->timer, (uint64_t)ms * 1000ULL) != ESP_OK) {
+            ESP_LOGW("AP_TaskUtils", "notifyAfter('%s'): timer start failed", name);
+            esp_timer_delete(ctx->timer);
+            delete ctx;
+        }
     } else {
         ESP_LOGW("AP_TaskUtils", "notifyAfter('%s'): timer create failed", name);
         delete ctx;

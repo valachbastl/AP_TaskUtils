@@ -4,7 +4,8 @@ Utility library for FreeRTOS tasks in ESP-IDF. Simplifies task lifecycle managem
 
 ## Features
 
-- **Three task modes** — `PERIODIC` (vTaskDelayUntil, precise interval), `DELAY` (ulTaskNotifyTake, wakeable anytime), `EVENT` (event-driven, no interval)
+- **Three task modes** — `PERIODIC` (precise interval, run-time compensated), `DELAY` (approximate interval, wakeable anytime), `EVENT` (event-driven, no interval)
+- **DFS-safe timing** — `PERIODIC`/`DELAY` are scheduled off the monotonic `esp_timer`, not the FreeRTOS tick, so they stay accurate under dynamic frequency scaling (see [espressif/esp-idf#17992](https://github.com/espressif/esp-idf/issues/17992))
 - **Task registry** — wake, suspend, resume or destroy any task by name without storing `TaskHandle_t`
 - **No boilerplate** — no explicit `begin()` needed, ready signaled automatically on first `wait()`
 - **`AP_Channel<T>`** — thread-safe shared state for 1 writer / N readers (ISR-safe)
@@ -21,7 +22,7 @@ lib_deps =
     https://github.com/valachbastl/AP_TaskUtils.git
 
 # Or pinned to version:
-    https://github.com/valachbastl/AP_TaskUtils.git#v2.5.0
+    https://github.com/valachbastl/AP_TaskUtils.git#v2.6.0
 ```
 
 ## Quick Start
@@ -73,9 +74,9 @@ void mqtt_task_create()
 
 ## Task Modes
 
-### PERIODIC — precise interval (vTaskDelayUntil)
+### PERIODIC — precise interval (esp_timer-scheduled)
 
-Automatically compensates for task run time. Use for sensors, control loops — anything that must run at exact intervals.
+Automatically compensates for task run time (same catch-up semantics as `vTaskDelayUntil`, just timed off `esp_timer` instead of the FreeRTOS tick — accurate even under DFS). Use for sensors, control loops — anything that must run at exact intervals.
 
 ```cpp
 static void sensorTask(void *pvParameters)
@@ -97,7 +98,7 @@ static void sensorTask(void *pvParameters)
 }
 ```
 
-### DELAY — approximate interval, wakeable anytime (ulTaskNotifyTake)
+### DELAY — approximate interval, wakeable anytime (esp_timer-scheduled)
 
 Sleeps for up to `intervalMs` but can be woken immediately from another task. Use for MQTT publish, display refresh — tasks that run periodically but also on demand.
 
@@ -242,6 +243,11 @@ static void mqttTask(void *pvParameters)
 ---
 
 ## Shared Data
+
+`T` must be trivially copyable (a plain data struct) — FreeRTOS queues copy it
+byte-for-byte internally, so a type with an owning pointer, `std::string`/`std::vector`,
+or a user-defined copy constructor/destructor is rejected at compile time
+(`static_assert`) rather than silently corrupting memory at runtime.
 
 ### AP_Channel\<T\> — shared state (1 writer, N readers)
 

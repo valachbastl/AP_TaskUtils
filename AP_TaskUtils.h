@@ -40,8 +40,8 @@ class AP_TaskUtils
 {
 public:
     enum Mode {
-        PERIODIC,  // vTaskDelayUntil     — precise interval, automatic run time compensation
-        DELAY,     // ulTaskNotifyTake    — approximate interval, wakeable anytime
+        PERIODIC,  // esp_timer-scheduled — precise interval, automatic run time compensation
+        DELAY,     // esp_timer-scheduled — approximate interval, wakeable anytime
         EVENT      // ulTaskNotifyTake(∞) — event-driven only, no interval
     };
 
@@ -76,9 +76,16 @@ public:
      * @brief Main blocking call — put at end of while(1) loop.
      *        Calls signalReady() if not yet called.
      *
-     *        PERIODIC → vTaskDelayUntil (precise interval, compensates run time)
-     *        DELAY    → ulTaskNotifyTake with timeout (wakeable anytime)
+     *        PERIODIC → esp_timer-scheduled wake, precise interval, compensates run
+     *                   time (same catch-up semantics as vTaskDelayUntil); notify()
+     *                   has no effect on timing, same as before
+     *        DELAY    → esp_timer-scheduled wake with the configured interval,
+     *                   wakeable early by any notify()
      *        EVENT    → ulTaskNotifyTake without timeout (woken exclusively by notify())
+     *
+     *        PERIODIC/DELAY timing is driven by the monotonic esp_timer, not the
+     *        FreeRTOS tick — immune to tick-rate drift under dynamic frequency
+     *        scaling (a known ESP-IDF/FreeRTOS limitation, see espressif/esp-idf#17992).
      */
     void wait();
 
@@ -137,7 +144,12 @@ public:
      *          task.waitReady("wifiTask");  // wait until wifiTask signals ready
      *
      * @param name      Name of the task to wait for
-     * @param timeoutMs Maximum wait time in ms (default portMAX_DELAY = wait forever)
+     * @param timeoutMs Maximum wait time in ms (default portMAX_DELAY = wait forever).
+     *                  Still FreeRTOS-tick-based (xSemaphoreTake), unlike wait()'s
+     *                  PERIODIC/DELAY timing — a one-shot startup-sync timeout is not
+     *                  sensitive to tick-rate drift the way a repeating interval is,
+     *                  so it wasn't worth the added complexity of an esp_timer-backed
+     *                  semaphore wait here.
      * @return true if task signaled ready, false on timeout (logs warning)
      */
     bool waitReady(const char *name, uint32_t timeoutMs = portMAX_DELAY);
@@ -359,10 +371,11 @@ private:
     bool         _initialWaitDone;
     bool         _readySignaled;
     TaskHandle_t _taskHandle;
-    TickType_t   _lastWakeTime;
+    int64_t      _lastWakeTimeUs;  // esp_timer microseconds — PERIODIC's previous-wake reference (was TickType_t pre-2.6.0)
     uint64_t     _cycleStart;
     uint32_t     _lastRunTime;
-    esp_timer_handle_t _oneShot = nullptr;  // reusable one-shot timer for notifyAfter(ms)
+    esp_timer_handle_t _oneShot = nullptr;   // reusable one-shot timer — notifyAfter(ms) + internal PERIODIC/DELAY wait
+    volatile bool       _timerFired = false; // set by _oneShot's callback; lets PERIODIC's wait ignore external notify()
 
     std::vector<TimerEntry> _timers;
 
@@ -376,8 +389,26 @@ private:
     void                _registerTask();
     void                _blockForMode();
 
+    // Lazily creates _oneShot with a shared callback: sets _timerFired, then
+    // xTaskNotifyGive()s the owning task. Used by notifyAfter(ms) and _waitForTimer().
+    // Caller must already hold a self-pin (_pinHandle(_tag)) — see both call sites.
+    void                _ensureOneShot();
+
+    // Arms _oneShot for durationUs and blocks on ulTaskNotifyTake(portMAX_DELAY).
+    // ignoreExternalNotify=false (DELAY): any notify() satisfies the wait, same as
+    // today. ignoreExternalNotify=true (PERIODIC): loops until _oneShot itself
+    // fires, so an external notify() has no effect on timing — matches the old
+    // vTaskDelayUntil behavior, which task notifications never interrupted.
+    // Falls back to vTaskDelay() (tick-based) if esp_timer_create() fails (OOM) or
+    // if a concurrent destroy(name)/destroy() has already claimed removal of this
+    // task (self-pin fails) — see _pinHandle/_unpinHandle usage in the .cpp.
+    void                _waitForTimer(int64_t durationUs, bool ignoreExternalNotify);
+
     // Pin/unpin: used by notify(name)/suspend(name)/resume(name) to hold a handle
-    // stable against a concurrent self-destroy() while the FreeRTOS call is in flight.
+    // stable against a concurrent self-destroy() while the FreeRTOS call is in
+    // flight. Also self-pinned (_pinHandle(_tag)) by _waitForTimer()/notifyAfter(ms)
+    // to hold _oneShot stable against a concurrent destroy(name)/destroy() targeting
+    // this same task — same mechanism, same drain wait in _removeFromRegistry().
     static TaskHandle_t _pinHandle(const char *name);
     static void         _unpinHandle(const char *name);
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AP_QueueBase.h"
+#include <type_traits>
 
 /* ========================================================================== */
 /*  AP_Channel<T> — shared state (1 writer, N readers)                        */
@@ -18,6 +19,13 @@ template<typename T>
 class AP_Channel : private AP_QueueBase<T>
 {
 public:
+    // FreeRTOS queues memcpy the raw bytes of T — a non-trivially-copyable T (owning
+    // pointers, std::string/std::vector, a user-defined copy ctor/dtor) would compile
+    // silently and corrupt/double-free at runtime instead of failing here.
+    static_assert(std::is_trivially_copyable<T>::value,
+                  "AP_Channel<T>: T must be trivially copyable (plain data struct) — "
+                  "FreeRTOS queues copy it byte-for-byte, bypassing C++ copy semantics");
+
     AP_Channel() : AP_QueueBase<T>(1) {}
 
     /**

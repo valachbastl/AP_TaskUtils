@@ -1,5 +1,43 @@
 # Changelog
 
+## [2.6.0] - 2026-07-28
+
+### Fixed
+- `PERIODIC` and `DELAY` mode timing switched from the FreeRTOS tick (`vTaskDelayUntil`
+  / `ulTaskNotifyTake` with a tick-based timeout) to the monotonic `esp_timer` (one-shot
+  HW timer + untimed `ulTaskNotifyTake`). On ESP-IDF with dynamic frequency scaling
+  (`esp_pm`, DFS), the FreeRTOS tick can run measurably faster than real time — a known,
+  unresolved ESP-IDF/FreeRTOS limitation (`CONFIG_FREERTOS_TICK_SUPPORT_CORETIMER` ties
+  the tick to the CPU cycle counter, which DFS frequency switches can decalibrate; see
+  espressif/esp-idf#17992). Measured ~3% drift per minute on real HW with DFS enabled,
+  reproducible both on the bench and in the field (an OTA client using this library's
+  `DELAY` mode skipped every other check-in). `esp_timer` is unaffected by DFS, so timing
+  is now accurate regardless of whether DFS is active.
+  - `PERIODIC` keeps the exact same catch-up semantics as `vTaskDelayUntil` (advances the
+    wake reference by exactly one interval per cycle, never bursts through multiple missed
+    periods) and remains uninterruptible by `notify()`, same as before.
+  - `DELAY` keeps its "wakeable anytime via notify()" behavior.
+  - `waitReady(name, timeoutMs)`'s timeout is intentionally left tick-based — a one-shot
+    startup-sync wait isn't sensitive to tick-rate drift the way a repeating interval is,
+    and an `esp_timer`-backed semaphore wait would add real complexity for no practical gain.
+  - No public API changes.
+- Closed a use-after-free introduced by the `esp_timer` switch above: every `wait()` cycle
+  in `PERIODIC`/`DELAY` mode now touches the per-instance `_oneShot` timer, but nothing
+  protected it against a concurrent `destroy(name)`/`destroy()` (from another task)
+  deleting that same timer mid-arm. `_waitForTimer()` and `notifyAfter(ms)` now self-pin
+  (`_pinHandle(_tag)`/`_unpinHandle(_tag)`) around every `_oneShot` create/arm/stop —
+  the same busyCount/drain mechanism `_removeFromRegistry()` already used for
+  `notify(name)`/`suspend(name)`/`resume(name)`. The pin is held only for the short
+  create-and-arm sequence, released before the actual blocking wait, so `destroy(name)`
+  is never held up for a full interval.
+- `AP_TaskUtils::notifyAfter(name, ms)` (static) now checks `esp_timer_start_once()`'s
+  return value — on failure it now deletes the timer and frees its context instead of
+  leaking both permanently.
+- `AP_Channel<T>`/`AP_Queue<T>` now `static_assert(std::is_trivially_copyable<T>::value)`.
+  FreeRTOS queues copy `T` byte-for-byte; a non-trivially-copyable `T` (owning pointers,
+  `std::string`/`std::vector`, a user-defined copy ctor/dtor) used to compile silently
+  and corrupt/double-free at runtime instead of failing at compile time.
+
 ## [2.5.0] - 2026-07-27
 
 Vyresene nalezy z plneho auditu 2026-07-08 (viz TODO_next_version.md). Beze
